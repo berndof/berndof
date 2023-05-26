@@ -2,7 +2,6 @@
 
 - 🔭 Estágiario do Grupo SCC
 - 💻 TI
-- Python
-- 👨‍💻 Software tester
+- 👨‍💻 Python
 - 👨‍🎓 Estudando Big Data e Ciência Analítica
 - 🤖 Machine Learning
