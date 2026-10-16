@@ -1,3 +1,14 @@
+<div align="center">
+
+[![Status](https://img.shields.io/badge/status-poking_at_systems-10b981?style=flat-square&logo=gnubash&logoColor=white)](#)
+[![Org](https://img.shields.io/badge/day_ops-@gruposcc_%2F_SCC10-0ea5e9?style=flat-square)](#)
+[![Job Title](https://img.shields.io/badge/job_title-404_not_found-6366f1?style=flat-square)](#)
+[![Stack](https://img.shields.io/badge/stack-whatever_works-f59e0b?style=flat-square)](#)
+[![Node Modules](https://img.shields.io/badge/node__modules-0B_(no_react)-ec4899?style=flat-square)](#)
+[![Legacy](https://img.shields.io/badge/Hello,_Wolrd!-2023--2026_RIP-ef4444?style=flat-square)](#)
+
+</div>
+
 ```console
 $ finger berndof
 Login: berndof                          Name: Bernardo
