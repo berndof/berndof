@@ -2,7 +2,7 @@
 """
 Generates a btop/tmux-inspired terminal monitor SVG (dark & light themes)
 with a 3D isometric contribution matrix, weekly signal trace, 24h circadian
-histogram, and live process table from GitHub GraphQL contribution data.
+histogram, and live dynamic process table from GitHub GraphQL & REST data.
 Zero external dependencies (Python 3 stdlib only).
 """
 
@@ -39,6 +39,68 @@ query($login: String!) {
 }
 """
 
+PROC_GROUPS = [
+    {
+        "pid": 412,
+        "bin": "chisel",
+        "args": "client --psk [scc10-noc]",
+        "bin_col": "cyan",
+        "base_mem": 16,
+        "repos": [
+            "gruposcc/infrascc10",
+            "gruposcc/caddy-reverse-proxy",
+            "gruposcc/zabbix-agent",
+            "gruposcc/monitoramento",
+        ],
+    },
+    {
+        "pid": 855,
+        "bin": "python3",
+        "args": "dse855_zabbix.py --coax-port-80",
+        "bin_col": "accent",
+        "base_mem": 32,
+        "repos": [
+            "berndof/dse855-scraper",
+            "berndof/fusion_solar_scraper",
+        ],
+    },
+    {
+        "pid": 1337,
+        "bin": "opencode",
+        "args": "--agents 5 --trust-none",
+        "bin_col": "cyan",
+        "base_mem": 84,
+        "repos": [
+            "berndof/opencode-orchestrator",
+            "berndof/opencode-remote",
+            "berndof/opencode-agy-bridge",
+            "berndof/opencode-system-analytics",
+        ],
+    },
+    {
+        "pid": 2026,
+        "bin": "python3",
+        "args": "monte_carlo.py -n 30000 --still-unsure",
+        "bin_col": "accent",
+        "base_mem": 210,
+        "repos": [
+            "berndof/eleicao-2026",
+        ],
+    },
+    {
+        "pid": 4004,
+        "bin": "uvicorn",
+        "args": "app:app --htmx --no-react",
+        "bin_col": "cyan",
+        "base_mem": 12,
+        "repos": [
+            "gruposcc/gestao-torres",
+            "gruposcc/sccintranet",
+            "berndof/OmniRoute",
+        ],
+    },
+]
+
 
 def fetch_data():
     if not GITHUB_TOKEN:
@@ -58,48 +120,99 @@ def fetch_data():
     return payload["data"]["user"]
 
 
-def fetch_commit_hours():
-    """Sample commit timestamps across key repos to compute real hour-of-day (BRT, UTC-3) activity."""
-    if not GITHUB_TOKEN:
-        return [8, 12, 15, 19, 6, 2, 0, 1, 4, 11, 18, 22, 14, 20, 25, 28, 24, 19, 14, 16, 21, 26, 29, 18]
-    repos = [
-        "gruposcc/infrascc10",
-        "gruposcc/gestao-torres",
-        "gruposcc/caddy-reverse-proxy",
-        "gruposcc/zabbix-agent",
-        "berndof/opencode-orchestrator",
-        "berndof/opencode-remote",
-        "berndof/eleicao-2026",
-        "berndof/fusion_solar_scraper",
-        "berndof/dse855-scraper",
-    ]
+def fetch_live_telemetry():
+    """
+    Samples commit timestamps across all repo groups to compute:
+    1. Real hour-of-day (BRT, UTC-3) commit distribution
+    2. Live process table metrics (State R/S, CPU%, MEM, TIME+) per domain
+    """
+    default_hours = [8, 12, 15, 19, 6, 2, 0, 1, 4, 11, 18, 22, 14, 20, 25, 28, 24, 19, 14, 16, 21, 26, 29, 18]
     hours = [0] * 24
-    for repo in repos:
-        url = f"https://api.github.com/repos/{repo}/commits?per_page=100"
-        req = urllib.request.Request(
-            url,
-            headers={
-                "Authorization": f"Bearer {GITHUB_TOKEN}",
-                "User-Agent": "berndof-telemetry-generator",
-            },
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                commits = json.loads(resp.read().decode("utf-8"))
-                for c in commits:
-                    author = (c.get("author") or {}).get("login", "")
-                    email = ((c.get("commit") or {}).get("author") or {}).get("email", "")
-                    if author == GITHUB_USER or "berndof" in email or "bernardo" in email:
-                        date_str = ((c.get("commit") or {}).get("author") or {}).get("date", "")
-                        if date_str:
-                            dt = datetime.datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-                            brt_hour = (dt.hour - 3) % 24
-                            hours[brt_hour] += 1
-        except Exception:
-            continue
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+
+    repo_stats = {}
+    all_repos = set()
+    for g in PROC_GROUPS:
+        for r in g["repos"]:
+            all_repos.add(r)
+
+    if GITHUB_TOKEN:
+        for repo in sorted(all_repos):
+            url = f"https://api.github.com/repos/{repo}/commits?per_page=100"
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "Authorization": f"Bearer {GITHUB_TOKEN}",
+                    "User-Agent": "berndof-telemetry-generator",
+                },
+            )
+            r_total = 0
+            r_7d = 0
+            r_30d = 0
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    commits = json.loads(resp.read().decode("utf-8"))
+                    for c in commits:
+                        author = (c.get("author") or {}).get("login", "")
+                        email = ((c.get("commit") or {}).get("author") or {}).get("email", "")
+                        if author == GITHUB_USER or "berndof" in email or "bernardo" in email:
+                            date_str = ((c.get("commit") or {}).get("author") or {}).get("date", "")
+                            if date_str:
+                                dt = datetime.datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                                brt_hour = (dt.hour - 3) % 24
+                                hours[brt_hour] += 1
+                                r_total += 1
+                                age_days = (now_utc - dt).total_seconds() / 86400.0
+                                if age_days <= 7.0:
+                                    r_7d += 1
+                                if age_days <= 30.0:
+                                    r_30d += 1
+            except Exception:
+                pass
+            repo_stats[repo] = {"total": r_total, "d7": r_7d, "d30": r_30d}
+
     if sum(hours) == 0:
-        hours = [8, 12, 15, 19, 6, 2, 0, 1, 4, 11, 18, 22, 14, 20, 25, 28, 24, 19, 14, 16, 21, 26, 29, 18]
-    return hours
+        hours = default_hours
+
+    proc_rows = []
+    for g in PROC_GROUPS:
+        tot = sum(repo_stats.get(r, {}).get("total", 0) for r in g["repos"])
+        d7 = sum(repo_stats.get(r, {}).get("d7", 0) for r in g["repos"])
+        d30 = sum(repo_stats.get(r, {}).get("d30", 0) for r in g["repos"])
+
+        if not GITHUB_TOKEN or not repo_stats:
+            # Fallback realistic numbers for offline dry-run
+            tot = (g["pid"] % 35) + 12
+            d7 = 4 if g["pid"] in (412, 1337, 2026) else 0
+            d30 = d7 * 3 + 2
+
+        state = "R" if d7 > 0 else "S"
+        if state == "R":
+            cpu = min(92.4, round(3.5 + d7 * 3.2 + d30 * 0.45, 1))
+        else:
+            cpu = round(0.2 + min(3.0, d30 * 0.15), 1)
+
+        mem_mb = g["base_mem"] + min(48, d30 * 2)
+        mins = max(14, tot * 6 + d30 * 3)
+        secs = (tot * 19 + g["pid"]) % 60
+        time_str = f"{mins}:{secs:02d}"
+
+        proc_rows.append(
+            {
+                "pid": g["pid"],
+                "state": state,
+                "cpu": cpu,
+                "mem": f"{mem_mb}M",
+                "time": time_str,
+                "bin": g["bin"],
+                "args": g["args"],
+                "bin_col": g["bin_col"],
+                "sort_key": (1 if state == "R" else 0, cpu, tot),
+            }
+        )
+
+    proc_rows.sort(key=lambda x: x["sort_key"], reverse=True)
+    return hours, proc_rows
 
 
 def render_iso_cube(cx, cy, h, wx, wy, colors, delay_s=0.0, is_peak=False):
@@ -129,7 +242,7 @@ def render_iso_cube(cx, cy, h, wx, wy, colors, delay_s=0.0, is_peak=False):
     return "".join(parts)
 
 
-def generate_svg(user_data, commit_hours, mode="dark"):
+def generate_svg(user_data, commit_hours, proc_rows, mode="dark"):
     cc = user_data["contributionsCollection"]
     cal = cc["contributionCalendar"]
     total_contribs = cal["totalContributions"]
@@ -141,10 +254,12 @@ def generate_svg(user_data, commit_hours, mode="dark"):
     max_day = 0
     peak_coords = None
     weekly_totals = []
+    flat_days = []
     for w_idx, w in enumerate(weeks):
         w_sum = 0
         for d in w["contributionDays"]:
             c = d["contributionCount"]
+            flat_days.append(c)
             w_sum += c
             if c > 0:
                 active_days += 1
@@ -152,6 +267,14 @@ def generate_svg(user_data, commit_hours, mode="dark"):
                 max_day = c
                 peak_coords = (w_idx, d["weekday"], c)
         weekly_totals.append(w_sum)
+
+    # Dynamic load average (3d, 7d, 30d commit density)
+    last_3d = sum(flat_days[-3:]) if len(flat_days) >= 3 else 0
+    last_7d = sum(flat_days[-7:]) if len(flat_days) >= 7 else 0
+    last_30d = sum(flat_days[-30:]) if len(flat_days) >= 30 else 0
+    load_1 = max(0.08, round((last_3d / 3.0) / 3.2, 2))
+    load_5 = max(0.10, round((last_7d / 7.0) / 3.2, 2))
+    load_15 = max(0.12, round((last_30d / 30.0) / 3.2, 2))
 
     avg_wk = total_contribs / max(1, len(weekly_totals))
     max_wk = max(weekly_totals) if weekly_totals else 0
@@ -302,7 +425,6 @@ def generate_svg(user_data, commit_hours, mode="dark"):
         bh = max(1.8, (count / max_hr) * (hist_y1 - hist_y0))
         bx = hist_x0 + hr * bar_w
         by = hist_y1 - bh
-        # Track background
         bars_svg.append(
             f'<rect x="{bx:.1f}" y="{hist_y0}" width="{bar_w - 2.0:.1f}" height="{hist_y1 - hist_y0}" rx="1" fill="{grid_line}" opacity="0.35"/>'
         )
@@ -313,6 +435,25 @@ def generate_svg(user_data, commit_hours, mode="dark"):
         bars_svg.append(
             f'<rect x="{bx:.1f}" y="{by:.1f}" width="{bar_w - 2.0:.1f}" height="{bh:.1f}" rx="1" fill="{bcol}" opacity="0.92"/>'
         )
+
+    # Pane 4: Dynamic Process Rows
+    running_count = sum(1 for r in proc_rows if r["state"] == "R")
+    proc_svg_lines = []
+    row_ys = [210, 227, 244, 261, 278]
+    for idx, r in enumerate(proc_rows[:5]):
+        ry = row_ys[idx]
+        s_col = accent if r["state"] == "R" else text_muted
+        b_col = accent_cyan if r["bin_col"] == "cyan" else accent
+        pid_s = f"{r['pid']:>5}"
+        cpu_s = f"{r['cpu']:>5.1f}"
+        mem_s = f"{r['mem']:>5}"
+        time_s = f"{r['time']:>7}"
+        proc_svg_lines.append(
+            f'  <text x="410" y="{ry}" fill="{text_main}" font-size="8.5" class="mono" xml:space="preserve">'
+            f'{pid_s}  <tspan fill="{s_col}" font-weight="bold">{r["state"]}</tspan>  {cpu_s}  {mem_s}  {time_s}   '
+            f'<tspan fill="{b_col}">{r["bin"]}</tspan> {r["args"]}</text>'
+        )
+    proc_block_svg = "\n".join(proc_svg_lines)
 
     svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 352" width="100%" height="100%">
   <defs>
@@ -359,7 +500,7 @@ def generate_svg(user_data, commit_hours, mode="dark"):
   <circle cx="27" cy="15" r="3.2" fill="{text_dim}" opacity="0.6"/>
   <circle cx="38" cy="15" r="3.2" fill="{text_dim}" opacity="0.6"/>
   <text x="440" y="18.5" text-anchor="middle" fill="{text_muted}" font-size="10" class="mono">berndof@fln-noc: ~ (tmux)</text>
-  <text x="866" y="18.5" text-anchor="end" fill="{text_muted}" font-size="9" class="mono">up {up_y}y {up_d}d │ load: 0.42 0.86 1.05</text>
+  <text x="866" y="18.5" text-anchor="end" fill="{text_muted}" font-size="9" class="mono">up {up_y}y {up_d}d │ load: {load_1:.2f} {load_5:.2f} {load_15:.2f}</text>
 
   <!-- ======================================================================= -->
   <!-- PANE 1: 3D Isometric Commit Matrix (btop box style)                     -->
@@ -424,12 +565,12 @@ def generate_svg(user_data, commit_hours, mode="dark"):
   <text x="856" y="151" text-anchor="end" fill="{text_dim}" font-size="7.5" class="mono">23h</text>
 
   <!-- ======================================================================= -->
-  <!-- PANE 4: Process Table (btop / htop proc view)                           -->
+  <!-- PANE 4: Process Table (btop / htop dynamic proc view)                   -->
   <!-- ======================================================================= -->
   <rect x="398" y="170" width="470" height="144" rx="3" fill="{panel_bg}" stroke="{panel_border}" stroke-width="1"/>
   <rect x="408" y="164" width="144" height="11" fill="{panel_bg}"/>
   <text x="412" y="173" fill="{text_main}" font-size="9.5" class="mono"><tspan fill="{text_muted}">┤</tspan><tspan fill="{accent}" font-weight="bold">⁴</tspan> proc (user=berndof)<tspan fill="{text_muted}">├</tspan></text>
-  <text x="856" y="173" text-anchor="end" fill="{text_muted}" font-size="8.5" class="mono">tasks: <tspan fill="{text_main}">6</tspan> (<tspan fill="{accent_warn}">1 zombie</tspan>)</text>
+  <text x="856" y="173" text-anchor="end" fill="{text_muted}" font-size="8.5" class="mono">tasks: <tspan fill="{text_main}">6</tspan> (<tspan fill="{accent}">{running_count} running</tspan>, <tspan fill="{accent_warn}">1 zombie</tspan>)</text>
 
   <!-- Table Header -->
   <text x="410" y="190" fill="{text_muted}" font-size="8.5" font-weight="bold" class="mono" xml:space="preserve">  PID  S   CPU%   MEM     TIME+   COMMAND</text>
@@ -440,13 +581,9 @@ def generate_svg(user_data, commit_hours, mode="dark"):
   <rect x="404" y="233" width="458" height="16" rx="1.5" fill="{row_alt}"/>
   <rect x="404" y="267" width="458" height="16" rx="1.5" fill="{row_alt}"/>
 
-  <!-- Process Rows -->
-  <text x="410" y="210" fill="{text_main}" font-size="8.5" class="mono" xml:space="preserve">  412  <tspan fill="{accent}">S</tspan>    2.4   18M   418:12   <tspan fill="{accent_cyan}">chisel</tspan> client --psk [scc10-noc]</text>
-  <text x="410" y="227" fill="{text_main}" font-size="8.5" class="mono" xml:space="preserve">  855  <tspan fill="{accent}">R</tspan>    8.1   36M   104:08   <tspan fill="{accent}">python3</tspan> dse855_zabbix.py --coax-port-80</text>
-  <text x="410" y="244" fill="{text_main}" font-size="8.5" class="mono" xml:space="preserve"> 1337  <tspan fill="{accent}">R</tspan>   24.6   94M   289:44   <tspan fill="{accent_cyan}">opencode</tspan> --agents 5 --trust-none</text>
-  <text x="410" y="261" fill="{text_main}" font-size="8.5" class="mono" xml:space="preserve"> 2026  <tspan fill="{accent}">R</tspan>   61.2  240M    19:03   <tspan fill="{accent}">python3</tspan> monte_carlo.py -n 30000 --still-unsure</text>
-  <text x="410" y="278" fill="{text_main}" font-size="8.5" class="mono" xml:space="preserve"> 4004  <tspan fill="{accent}">S</tspan>    0.8   12M    62:15   <tspan fill="{accent_cyan}">uvicorn</tspan> app:app --zero-bundler</text>
-  <text x="410" y="295" fill="{text_muted}" font-size="8.5" class="mono" xml:space="preserve">  817  <tspan fill="{accent_zombie}" font-weight="bold">Z</tspan>    0.0    0B     0:00   <tspan fill="{text_muted}">[Hello, Wolrd!] &lt;defunct&gt;</tspan></text>
+  <!-- Dynamic Process Rows (sorted by live activity) -->
+{proc_block_svg}
+  <text x="410" y="295" fill="{text_muted}" font-size="8.5" class="mono" xml:space="preserve">  817  <tspan fill="{accent_zombie}" font-weight="bold">Z</tspan>    0.0    0B      0:00   <tspan fill="{text_muted}">[Hello, Wolrd!] &lt;defunct&gt;</tspan></text>
 
   <!-- ======================================================================= -->
   <!-- BOTTOM TMUX STATUS BAR                                                  -->
@@ -464,7 +601,6 @@ def generate_svg(user_data, commit_hours, mode="dark"):
 
 
 def _mock_user_data():
-    """Fallback structure for local dry-runs when GITHUB_TOKEN is not set."""
     weeks = []
     for w in range(53):
         days = []
@@ -489,10 +625,10 @@ def main():
     out_dir = os.environ.get("OUT_DIR", "dist")
     os.makedirs(out_dir, exist_ok=True)
     user_data = fetch_data() or _mock_user_data()
-    commit_hours = fetch_commit_hours()
+    commit_hours, proc_rows = fetch_live_telemetry()
 
-    dark_svg = generate_svg(user_data, commit_hours, mode="dark")
-    light_svg = generate_svg(user_data, commit_hours, mode="light")
+    dark_svg = generate_svg(user_data, commit_hours, proc_rows, mode="dark")
+    light_svg = generate_svg(user_data, commit_hours, proc_rows, mode="light")
 
     with open(os.path.join(out_dir, "noc-telemetry-dark.svg"), "w", encoding="utf-8") as f:
         f.write(dark_svg)

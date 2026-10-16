@@ -9,6 +9,18 @@ Plan:
   no fixed job title — i just like poking at systems until they work.
 ```
 
+```mermaid
+flowchart LR
+    A["weird problem appears"] --> B{"ready-made stack exists?"}
+    B -->|no| C["sniff packets / html & write python + bash"]
+    B -->|yes| D{"uses react or >50MB of node_modules?"}
+    D -->|yes| E["pretend it doesn't exist"] --> C
+    D -->|no| F{"needs a web UI?"}
+    F -->|yes| G["fastapi + htmx + zero bundlers"]
+    F -->|no| H["daemon + cron + raw sql"]
+    C & G & H --> I["runs on a toaster (12MB RAM)"]
+```
+
 <div align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/berndof/berndof/output/noc-telemetry-dark.svg" />
