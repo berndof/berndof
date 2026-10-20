@@ -21,17 +21,13 @@ Plan:
   no fixed job title — i just like poking at systems until they work.
 ```
 
-```mermaid
-flowchart LR
-    A["weird problem appears"] --> B{"ready-made solution exists?"}
-    B -->|no| C["shell script + python"]
-    B -->|yes| D{"heavy framework / mountains of boilerplate?"}
-    D -->|yes| E["pretend it doesn't exist"] --> C
-    D -->|no| F{"needs a web UI?"}
-    F -->|yes| G["html + css + js (como Deus quis)"]
-    F -->|no| H["daemon + cron + raw sql"]
-    C & G & H --> I["lightweight · runs on a toaster"]
-```
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/berndof/berndof/output/noc-pipeline-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/berndof/berndof/output/noc-pipeline-light.svg" />
+    <img alt="architecture & tooling pipeline" src="https://raw.githubusercontent.com/berndof/berndof/output/noc-pipeline-dark.svg" width="100%" />
+  </picture>
+</div>
 
 <div align="center">
   <picture>
