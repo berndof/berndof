@@ -505,15 +505,10 @@ def generate_telemetry_svg(user_data, commit_hours, stack_stats, mode="dark"):
       .mono {{ font-family: 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace; }}
       .led-ok {{ animation: blinkOk 2.8s infinite ease-in-out; }}
       .scanline {{ animation: sweep 6.5s infinite linear; }}
-      .pulse-runner {{ stroke-dasharray: 55 420; animation: runPulse 4.2s infinite linear; }}
       @keyframes blinkOk {{ 0%, 100% {{ opacity: 0.95; }} 50% {{ opacity: 0.25; }} }}
       @keyframes sweep {{
         0% {{ transform: translateX(-55px); }}
         100% {{ transform: translateX(430px); }}
-      }}
-      @keyframes runPulse {{
-        from {{ stroke-dashoffset: 475; }}
-        to {{ stroke-dashoffset: 0; }}
       }}
     </style>
   </defs>
@@ -595,8 +590,7 @@ def generate_telemetry_svg(user_data, commit_hours, stack_stats, mode="dark"):
 
   <g clip-path="url(#oscClip)">
     <polygon points="{osc_area}" fill="url(#oscGrad)"/>
-    <polyline points="{osc_polyline}" fill="none" stroke="{p["accent"]}" stroke-width="1.5" opacity="0.85"/>
-    <polyline points="{osc_polyline}" fill="none" stroke="{p["cyan"]}" stroke-width="1.9" class="pulse-runner"/>
+    <polyline points="{osc_polyline}" fill="none" stroke="{p["accent"]}" stroke-width="1.65"/>
     {"".join(peak_dots_svg)}
     <rect x="{osc_x0:.1f}" y="{osc_y0 - 4:.1f}" width="48" height="{osc_y1 - osc_y0 + 6:.1f}" fill="url(#scanGrad)" class="scanline"/>
   </g>
@@ -638,65 +632,70 @@ def generate_telemetry_svg(user_data, commit_hours, stack_stats, mode="dark"):
 def generate_pipeline_svg(mode="dark"):
     """
     Generates a NOC/terminal-styled architecture & workflow pipeline SVG
-    showing how field signals/problems flow through lightweight shell/python
-    collectors, SQL/daemons, and vanilla HTML+CSS+JS / Zabbix outputs.
+    with a window title bar, port-to-port bus connectors, command headers,
+    and structured rows.
     """
     p = _palette(mode)
+    row_bg = "#141b26" if mode == "dark" else "#f8fafc"
 
     stages = [
         {
             "num": "¹",
             "title": "signal &amp; hardware",
-            "badge": "field / edge",
+            "cmd": "$ listen --raw",
+            "badge": "in",
             "col": p["cyan"],
             "lines": [
-                ("•", "rf / broadcast / sensors"),
-                ("•", "stubborn legacy hardware"),
-                ("•", "raw packets &amp; rest apis"),
+                ("rf / sensors", "telemetry"),
+                ("legacy gear", "raw http/tcp"),
+                ("edge &amp; apis", "streams"),
             ],
         },
         {
             "num": "²",
             "title": "glue &amp; collectors",
-            "badge": "zero bloat",
+            "cmd": "$ pipe | parse",
+            "badge": "sh/py",
             "col": p["accent"],
             "lines": [
-                ("•", "sh / bash + coreutils"),
-                ("•", "python3 (stdlib-first)"),
-                ("•", "cron + pipes + scrapers"),
+                ("sh / bash", "coreutils"),
+                ("python3", "stdlib-first"),
+                ("cron + awk", "zero bloat"),
             ],
         },
         {
             "num": "³",
             "title": "state &amp; compute",
-            "badge": "low ram",
+            "cmd": "$ query --fast",
+            "badge": "core",
             "col": p["accent"],
             "lines": [
-                ("•", "raw sql &amp; fast queries"),
-                ("•", "lightweight unix daemons"),
-                ("•", "streams &amp; stochastic models"),
+                ("raw sql", "no heavy orm"),
+                ("unix daemons", "low ram"),
+                ("models", "stochastic"),
             ],
         },
         {
             "num": "⁴",
             "title": "output &amp; web ui",
-            "badge": "no bundlers",
+            "cmd": "$ serve --plain",
+            "badge": "out",
             "col": p["warn"],
             "lines": [
-                ("•", "html + css + js"),
-                (" ", "(as God intended)"),
-                ("•", "zabbix &amp; terminal tui"),
+                ("html+css+js", "vanilla web"),
+                ("↳ as God", "intended"),
+                ("zabbix / tui", "alerts &amp; hud"),
             ],
         },
     ]
 
     cards_svg = []
     connectors_svg = []
-    x0 = 14.0
-    card_w = 198.0
-    gap = 20.0
-    card_y = 22.0
-    card_h = 88.0
+    x0 = 12.0
+    card_w = 196.0
+    gap = 24.0
+    card_y = 38.0
+    card_h = 98.0
 
     for idx, st in enumerate(stages):
         cx = x0 + idx * (card_w + gap)
@@ -707,54 +706,74 @@ def generate_pipeline_svg(mode="dark"):
             f'  <rect x="{cx + 8:.1f}" y="{card_y - 6:.1f}" width="{title_box_w:.1f}" height="11" fill="{p["panel_bg"]}"/>'
             f'  <text x="{cx + 11:.1f}" y="{card_y + 3:.1f}" fill="{p["text_main"]}" font-size="9" class="mono">'
             f'<tspan fill="{p["text_muted"]}">┤</tspan><tspan fill="{st["col"]}" font-weight="bold">{st["num"]}</tspan> {st["title"]}<tspan fill="{p["text_muted"]}">├</tspan></text>'
-            f'  <text x="{cx + card_w - 8:.1f}" y="{card_y + 18:.1f}" text-anchor="end" fill="{st["col"]}" font-size="7.5" class="mono">[{st["badge"]}]</text>'
+            f'  <text x="{cx + 10:.1f}" y="{card_y + 18:.1f}" fill="{p["text_muted"]}" font-size="7.8" class="mono">{st["cmd"]}</text>'
+            f'  <rect x="{cx + card_w - 38:.1f}" y="{card_y + 9.5:.1f}" width="30" height="11" rx="2" fill="{row_bg}" stroke="{p["grid_line"]}" stroke-width="0.7"/>'
+            f'  <text x="{cx + card_w - 23:.1f}" y="{card_y + 17.5:.1f}" text-anchor="middle" fill="{st["col"]}" font-size="7.2" font-weight="bold" class="mono">{st["badge"]}</text>'
             f'  <line x1="{cx + 8:.1f}" y1="{card_y + 24:.1f}" x2="{cx + card_w - 8:.1f}" y2="{card_y + 24:.1f}" stroke="{p["grid_line"]}" stroke-width="1"/>'
         )
 
-        for l_idx, (bullet, text) in enumerate(st["lines"]):
-            ly = card_y + 41.0 + l_idx * 17.5
-            if text == "(as God intended)":
+        for l_idx, (left_txt, right_txt) in enumerate(st["lines"]):
+            ry = card_y + 30.0 + l_idx * 21.0
+            if l_idx % 2 == 0:
                 cards_svg.append(
-                    f'  <text x="{cx + 20:.1f}" y="{ly:.1f}" fill="{p["warn"]}" font-size="8.2" font-style="italic" class="mono">{text}</text>'
+                    f'  <rect x="{cx + 6:.1f}" y="{ry:.1f}" width="{card_w - 12:.1f}" height="17" rx="1.5" fill="{row_bg}"/>'
+                )
+            ty = ry + 11.5
+            if left_txt.startswith("↳"):
+                cards_svg.append(
+                    f'  <text x="{cx + 14:.1f}" y="{ty:.1f}" fill="{p["warn"]}" font-size="8.0" font-style="italic" class="mono">{left_txt} {right_txt}</text>'
                 )
             else:
                 cards_svg.append(
-                    f'  <text x="{cx + 10:.1f}" y="{ly:.1f}" fill="{p["text_main"]}" font-size="8.3" class="mono">'
-                    f'<tspan fill="{st["col"]}" font-weight="bold">{bullet}</tspan> {text}</text>'
+                    f'  <circle cx="{cx + 13:.1f}" cy="{ty - 2.8:.1f}" r="2.0" fill="{st["col"]}"/>'
+                    f'  <text x="{cx + 20:.1f}" y="{ty:.1f}" fill="{p["text_main"]}" font-size="8.2" font-weight="bold" class="mono">{left_txt}</text>'
+                    f'  <text x="{cx + card_w - 10:.1f}" y="{ty:.1f}" text-anchor="end" fill="{p["text_muted"]}" font-size="7.6" class="mono">{right_txt}</text>'
                 )
 
         if idx < len(stages) - 1:
-            ax0 = cx + card_w + 1.0
-            ax1 = cx + card_w + gap - 2.0
+            ax0 = cx + card_w
+            ax1 = cx + card_w + gap
             ay = card_y + card_h / 2.0
             connectors_svg.append(
-                f'  <line x1="{ax0:.1f}" y1="{ay:.1f}" x2="{ax1:.1f}" y2="{ay:.1f}" stroke="{p["panel_border"]}" stroke-width="1.2"/>'
-                f'  <line x1="{ax0:.1f}" y1="{ay:.1f}" x2="{ax1 - 2:.1f}" y2="{ay:.1f}" stroke="{p["accent"]}" stroke-width="1.6" stroke-dasharray="3,3" class="flow-line"/>'
-                f'  <polygon points="{ax1:.1f},{ay:.1f} {ax1 - 5.0:.1f},{ay - 3.0:.1f} {ax1 - 5.0:.1f},{ay + 3.0:.1f}" fill="{p["accent"]}"/>'
+                f'  <line x1="{ax0:.1f}" y1="{ay:.1f}" x2="{ax1:.1f}" y2="{ay:.1f}" stroke="{p["grid_line"]}" stroke-width="2.2"/>'
+                f'  <line x1="{ax0 + 3:.1f}" y1="{ay:.1f}" x2="{ax1 - 5:.1f}" y2="{ay:.1f}" stroke="{p["accent"]}" stroke-width="1.5" stroke-dasharray="3,3" class="flow-line"/>'
+                f'  <circle cx="{ax0:.1f}" cy="{ay:.1f}" r="2.6" fill="{p["panel_bg"]}" stroke="{st["col"]}" stroke-width="1.2"/>'
+                f'  <polygon points="{ax1 - 1.5:.1f},{ay:.1f} {ax1 - 6.5:.1f},{ay - 3.2:.1f} {ax1 - 6.5:.1f},{ay + 3.2:.1f}" fill="{p["accent"]}"/>'
             )
 
-    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 144" width="100%" height="100%">
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 172" width="100%" height="100%">
   <defs>
     <style>
       .mono {{ font-family: 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace; }}
-      .flow-line {{ animation: flowDash 1.4s infinite linear; }}
+      .flow-line {{ animation: flowDash 1.2s infinite linear; }}
       @keyframes flowDash {{
         to {{ stroke-dashoffset: -12; }}
       }}
     </style>
   </defs>
 
-  <!-- Outer Frame -->
-  <rect x="2" y="2" width="876" height="140" rx="6" fill="{p["bg"]}" stroke="{p["panel_border"]}" stroke-width="1.2"/>
+  <!-- Outer Terminal Window -->
+  <rect x="2" y="2" width="876" height="168" rx="6" fill="{p["bg"]}" stroke="{p["panel_border"]}" stroke-width="1.2"/>
 
-  <!-- Pipeline Stage Cards & Animated Connectors -->
+  <!-- Terminal Header Bar -->
+  <path d="M 2 8 Q 2 2 8 2 L 872 2 Q 878 2 878 8 L 878 26 L 2 26 Z" fill="{p["term_bar"]}"/>
+  <line x1="2" y1="26" x2="878" y2="26" stroke="{p["panel_border"]}" stroke-width="1"/>
+  <circle cx="16" cy="14" r="3.0" fill="{p["text_dim"]}" opacity="0.6"/>
+  <circle cx="26" cy="14" r="3.0" fill="{p["text_dim"]}" opacity="0.6"/>
+  <circle cx="36" cy="14" r="3.0" fill="{p["text_dim"]}" opacity="0.6"/>
+  <text x="440" y="17.5" text-anchor="middle" fill="{p["text_muted"]}" font-size="9.2" class="mono">berndof :: architecture &amp; workflow pipeline</text>
+  <text x="866" y="17.5" text-anchor="end" fill="{p["text_muted"]}" font-size="8.2" class="mono">policy: keep-it-lightweight</text>
+
+  <!-- Pipeline Stage Cards & Animated Bus Connectors -->
 {chr(10).join(cards_svg)}
 {chr(10).join(connectors_svg)}
 
   <!-- Bottom Principle Bar -->
-  <rect x="14" y="116" width="852" height="19" rx="2.5" fill="{p["tmux_bg"]}" stroke="{p["panel_border"]}" stroke-width="0.8"/>
-  <text x="24" y="128.5" fill="{p["text_muted"]}" font-size="8.2" class="mono"><tspan fill="{p["accent"]}" font-weight="bold">$ pipeline --rule:</tspan> keep it simple · shell + python + raw sql + plain html/css/js · runs on a toaster</text>
-  <text x="856" y="128.5" text-anchor="end" fill="{p["text_dim"]}" font-size="8" class="mono">[minimal boilerplate]</text>
+  <rect x="12" y="143" width="856" height="19" rx="2.5" fill="{p["tmux_bg"]}" stroke="{p["panel_border"]}" stroke-width="0.8"/>
+  <rect x="12" y="143" width="58" height="19" rx="2.5" fill="{p["cyan"]}"/>
+  <text x="41" y="155.5" text-anchor="middle" fill="{p["tmux_pill_fg"]}" font-size="8.2" font-weight="bold" class="mono">unix</text>
+  <text x="80" y="155.5" fill="{p["text_muted"]}" font-size="8.2" class="mono">if a shell script + python + plain <tspan fill="{p["text_main"]}">html/css/js</tspan> solves it, skip the 200MB framework · <tspan fill="{p["accent"]}">runs on a toaster</tspan></text>
+  <text x="858" y="155.5" text-anchor="end" fill="{p["text_dim"]}" font-size="8" class="mono">0B bloat</text>
 </svg>
 """
     return svg
