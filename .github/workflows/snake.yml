@@ -19,20 +19,20 @@ jobs:
       - name: checkout repository
         uses: actions/checkout@v4
 
-      - name: generate custom NOC & 3D Isometric Telemetry HUD
-        env:
-          GITHUB_USER: ${{ github.repository_owner }}
-          GITHUB_TOKEN: ${{ secrets.SNK_GITHUB_TOKEN }}
-        run: python3 scripts/generate_telemetry.py
-
       - name: generate github-contribution-grid-snake.svg
         uses: Platane/snk/svg-only@v3
         with:
           github_user_name: ${{ github.repository_owner }}
           github_user_token: ${{ secrets.SNK_GITHUB_TOKEN }}
           outputs: |
-            dist/github-contribution-grid-snake.svg
-            dist/github-contribution-grid-snake-dark.svg?palette=github-dark
+            dist/github-contribution-grid-snake.svg?color_snake=#0284c7&color_dots=#e2e8f0,#6ee7b7,#34d399,#10b981,#047857
+            dist/github-contribution-grid-snake-dark.svg?palette=github-dark&color_snake=#38bdf8&color_dots=#121822,#047857,#10b981,#34d399,#6ee7b7
+
+      - name: generate telemetry snapshot & patch snake dark palette
+        env:
+          GITHUB_USER: ${{ github.repository_owner }}
+          GITHUB_TOKEN: ${{ secrets.SNK_GITHUB_TOKEN }}
+        run: python3 scripts/generate_telemetry.py
 
       - name: push generated SVGs to the output branch
         uses: crazy-max/ghaction-github-pages@v3.1.0

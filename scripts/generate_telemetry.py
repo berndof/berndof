@@ -1,23 +1,54 @@
 #!/usr/bin/env python3
 """
-Generates a btop/tmux-inspired terminal monitor SVG (dark & light themes)
-with a 3D isometric contribution matrix, weekly signal trace, 24h circadian
-histogram, and live dynamic process table from GitHub GraphQL & REST data.
+Generates a clean terminal-styled GitHub telemetry SVG (dark & light themes)
+with a 2D contribution heatmap, 24h UTC-3 activity histogram, 52-week
+throughput curve, and real repository stack distribution from GitHub GraphQL.
+Also patches Platane/snk SVG palettes for high contrast in dark/light modes.
 Zero external dependencies (Python 3 stdlib only).
 """
 
+import collections
 import datetime
 import json
 import os
+import re
+import subprocess
+import sys
 import urllib.request
 
 GITHUB_USER = os.environ.get("GITHUB_USER", "berndof")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+if not GITHUB_TOKEN:
+    try:
+        GITHUB_TOKEN = subprocess.check_output(["gh", "auth", "token"], text=True, timeout=5).strip()
+    except Exception:
+        GITHUB_TOKEN = ""
 
 GRAPHQL_QUERY = """
 query($login: String!) {
   user(login: $login) {
     createdAt
+    repositories(
+      first: 50
+      ownerAffiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER]
+      isFork: false
+      orderBy: {field: PUSHED_AT, direction: DESC}
+    ) {
+      totalCount
+      nodes {
+        nameWithOwner
+        isPrivate
+        pushedAt
+        languages(first: 8, orderBy: {field: SIZE, direction: DESC}) {
+          edges {
+            size
+            node {
+              name
+            }
+          }
+        }
+      }
+    }
     contributionsCollection {
       totalCommitContributions
       restrictedContributionsCount
@@ -39,106 +70,52 @@ query($login: String!) {
 }
 """
 
-PROC_GROUPS = [
-    {
-        "pid": 412,
-        "bin": "chisel",
-        "args": "client --psk [scc10-noc]",
-        "bin_col": "cyan",
-        "base_mem": 16,
-        "repos": [
-            "gruposcc/infrascc10",
-            "gruposcc/caddy-reverse-proxy",
-            "gruposcc/zabbix-agent",
-            "gruposcc/monitoramento",
-        ],
-    },
-    {
-        "pid": 855,
-        "bin": "python3",
-        "args": "dse855_zabbix.py --coax-port-80",
-        "bin_col": "accent",
-        "base_mem": 32,
-        "repos": [
-            "berndof/dse855-scraper",
-            "berndof/fusion_solar_scraper",
-        ],
-    },
-    {
-        "pid": 1337,
-        "bin": "opencode",
-        "args": "--agents 5 --trust-none",
-        "bin_col": "cyan",
-        "base_mem": 84,
-        "repos": [
-            "berndof/opencode-orchestrator",
-            "berndof/opencode-remote",
-            "berndof/opencode-agy-bridge",
-            "berndof/opencode-system-analytics",
-        ],
-    },
-    {
-        "pid": 2026,
-        "bin": "python3",
-        "args": "monte_carlo.py -n 30000 --still-unsure",
-        "bin_col": "accent",
-        "base_mem": 210,
-        "repos": [
-            "berndof/eleicao-2026",
-        ],
-    },
-    {
-        "pid": 4004,
-        "bin": "uvicorn",
-        "args": "app:app --htmx --no-react",
-        "bin_col": "cyan",
-        "base_mem": 12,
-        "repos": [
-            "gruposcc/gestao-torres",
-            "gruposcc/sccintranet",
-            "berndof/OmniRoute",
-        ],
-    },
-]
-
 
 def fetch_data():
-    if not GITHUB_TOKEN:
+    if GITHUB_TOKEN:
+        req = urllib.request.Request(
+            "https://api.github.com/graphql",
+            data=json.dumps({"query": GRAPHQL_QUERY, "variables": {"login": GITHUB_USER}}).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {GITHUB_TOKEN}",
+                "Content-Type": "application/json",
+                "User-Agent": "berndof-telemetry-generator",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        return payload["data"]["user"]
+
+    # Local fallback via gh CLI if authenticated
+    try:
+        res = subprocess.run(
+            ["gh", "api", "graphql", "-f", f"query={GRAPHQL_QUERY}", "-f", f"login={GITHUB_USER}"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        )
+        payload = json.loads(res.stdout)
+        return payload["data"]["user"]
+    except Exception:
         return None
-    req = urllib.request.Request(
-        "https://api.github.com/graphql",
-        data=json.dumps({"query": GRAPHQL_QUERY, "variables": {"login": GITHUB_USER}}).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {GITHUB_TOKEN}",
-            "Content-Type": "application/json",
-            "User-Agent": "berndof-telemetry-generator",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
-    return payload["data"]["user"]
 
 
-def fetch_live_telemetry():
+def fetch_commit_hours(user_data):
     """
-    Samples commit timestamps across all repo groups to compute:
-    1. Real hour-of-day (BRT, UTC-3) commit distribution
-    2. Live process table metrics (State R/S, CPU%, MEM, TIME+) per domain
+    Samples recent commit timestamps across dynamically discovered repositories
+    to compute the real 24h (BRT, UTC-3) commit distribution.
     """
     default_hours = [8, 12, 15, 19, 6, 2, 0, 1, 4, 11, 18, 22, 14, 20, 25, 28, 24, 19, 14, 16, 21, 26, 29, 18]
     hours = [0] * 24
-    now_utc = datetime.datetime.now(datetime.timezone.utc)
 
-    repo_stats = {}
-    all_repos = set()
-    for g in PROC_GROUPS:
-        for r in g["repos"]:
-            all_repos.add(r)
+    repos_nodes = ((user_data or {}).get("repositories") or {}).get("nodes") or []
+    repo_names = [r["nameWithOwner"] for r in repos_nodes[:10] if r.get("nameWithOwner")]
 
-    if GITHUB_TOKEN:
-        for repo in sorted(all_repos):
-            url = f"https://api.github.com/repos/{repo}/commits?per_page=100"
+    if GITHUB_TOKEN and repo_names:
+        for repo in repo_names:
+            url = f"https://api.github.com/repos/{repo}/commits?per_page=50"
             req = urllib.request.Request(
                 url,
                 headers={
@@ -146,11 +123,8 @@ def fetch_live_telemetry():
                     "User-Agent": "berndof-telemetry-generator",
                 },
             )
-            r_total = 0
-            r_7d = 0
-            r_30d = 0
             try:
-                with urllib.request.urlopen(req, timeout=10) as resp:
+                with urllib.request.urlopen(req, timeout=6) as resp:
                     commits = json.loads(resp.read().decode("utf-8"))
                     for c in commits:
                         author = (c.get("author") or {}).get("login", "")
@@ -161,88 +135,96 @@ def fetch_live_telemetry():
                                 dt = datetime.datetime.fromisoformat(date_str.replace("Z", "+00:00"))
                                 brt_hour = (dt.hour - 3) % 24
                                 hours[brt_hour] += 1
-                                r_total += 1
-                                age_days = (now_utc - dt).total_seconds() / 86400.0
-                                if age_days <= 7.0:
-                                    r_7d += 1
-                                if age_days <= 30.0:
-                                    r_30d += 1
             except Exception:
                 pass
-            repo_stats[repo] = {"total": r_total, "d7": r_7d, "d30": r_30d}
 
     if sum(hours) == 0:
         hours = default_hours
 
-    proc_rows = []
-    for g in PROC_GROUPS:
-        tot = sum(repo_stats.get(r, {}).get("total", 0) for r in g["repos"])
-        d7 = sum(repo_stats.get(r, {}).get("d7", 0) for r in g["repos"])
-        d30 = sum(repo_stats.get(r, {}).get("d30", 0) for r in g["repos"])
+    return hours
 
-        if not GITHUB_TOKEN or not repo_stats:
-            # Fallback realistic numbers for offline dry-run
-            tot = (g["pid"] % 35) + 12
-            d7 = 4 if g["pid"] in (412, 1337, 2026) else 0
-            d30 = d7 * 3 + 2
 
-        state = "R" if d7 > 0 else "S"
-        if state == "R":
-            cpu = min(92.4, round(3.5 + d7 * 3.2 + d30 * 0.45, 1))
-        else:
-            cpu = round(0.2 + min(3.0, d30 * 0.15), 1)
+def compute_stack_stats(user_data):
+    """
+    Aggregates repository language presence into 4 high-level stack categories
+    using a balanced per-repo weight so a single large repo does not skew the
+    multi-repository profile.
+    """
+    repos_info = (user_data or {}).get("repositories") or {}
+    nodes = repos_info.get("nodes") or []
+    total_repos = repos_info.get("totalCount") or len(nodes) or 21
+    priv_repos = sum(1 for r in nodes if r.get("isPrivate"))
+    pub_repos = max(0, len(nodes) - priv_repos)
+    if not nodes:
+        priv_repos, pub_repos = 12, 9
 
-        mem_mb = g["base_mem"] + min(48, d30 * 2)
-        mins = max(14, tot * 6 + d30 * 3)
-        secs = (tot * 19 + g["pid"]) % 60
-        time_str = f"{mins}:{secs:02d}"
+    weights = collections.Counter()
+    repo_sets = collections.defaultdict(set)
 
-        proc_rows.append(
+    for r in nodes:
+        rname = r.get("nameWithOwner", "")
+        edges = ((r.get("languages") or {}).get("edges")) or []
+        for e in edges:
+            lname = ((e.get("node") or {}).get("name")) or ""
+            sz = int(e.get("size") or 0)
+            score = 18000 + min(sz, 60000)
+            if lname == "Python":
+                cat = "python"
+            elif lname in ("Shell", "Makefile", "Dockerfile", "Batchfile", "PowerShell"):
+                cat = "sh / bash"
+            elif lname in ("HTML", "CSS", "JavaScript", "Mako", "Jinja"):
+                cat = "html+css+js"
+            else:
+                cat = "sql / php / ts"
+            weights[cat] += score
+            repo_sets[cat].add(rname)
+
+    if sum(weights.values()) == 0:
+        weights["python"] = 39
+        weights["sh / bash"] = 26
+        weights["html+css+js"] = 19
+        weights["sql / php / ts"] = 16
+        repo_sets["python"] = set(range(13))
+        repo_sets["sh / bash"] = set(range(12))
+        repo_sets["html+css+js"] = set(range(5))
+        repo_sets["sql / php / ts"] = set(range(5))
+
+    tot_w = max(1, sum(weights.values()))
+    categories = [
+        ("python", "daemons, cli &amp; data", "accent"),
+        ("sh / bash", "automation, cron &amp; glue", "cyan"),
+        ("html+css+js", "vanilla web, zero bloat", "warn"),
+        ("sql / php / ts", "schemas, portals &amp; types", "muted"),
+    ]
+
+    rows = []
+    for key, desc, col_key in categories:
+        pct = round((weights[key] / tot_w) * 100.0, 1)
+        rcount = len(repo_sets[key])
+        rows.append(
             {
-                "pid": g["pid"],
-                "state": state,
-                "cpu": cpu,
-                "mem": f"{mem_mb}M",
-                "time": time_str,
-                "bin": g["bin"],
-                "args": g["args"],
-                "bin_col": g["bin_col"],
-                "sort_key": (1 if state == "R" else 0, cpu, tot),
+                "label": key,
+                "desc": desc,
+                "pct": pct,
+                "repos": rcount,
+                "col_key": col_key,
             }
         )
 
-    proc_rows.sort(key=lambda x: x["sort_key"], reverse=True)
-    return hours, proc_rows
+    # Normalize rounding to 100.0%
+    diff = round(100.0 - sum(r["pct"] for r in rows), 1)
+    if rows and abs(diff) > 0:
+        rows[0]["pct"] = round(rows[0]["pct"] + diff, 1)
+
+    return {
+        "total_repos": total_repos,
+        "priv_repos": priv_repos,
+        "pub_repos": pub_repos,
+        "rows": rows,
+    }
 
 
-def render_iso_cube(cx, cy, h, wx, wy, colors, delay_s=0.0, is_peak=False):
-    top_fill, left_fill, right_fill, stroke_col = colors
-    t_top = (cx, cy - wy - h)
-    t_right = (cx + wx, cy - h)
-    t_bottom = (cx, cy + wy - h)
-    t_left = (cx - wx, cy - h)
-
-    b_right = (cx + wx, cy)
-    b_bottom = (cx, cy + wy)
-    b_left = (cx - wx, cy)
-
-    top_pts = f"{t_top[0]:.1f},{t_top[1]:.1f} {t_right[0]:.1f},{t_right[1]:.1f} {t_bottom[0]:.1f},{t_bottom[1]:.1f} {t_left[0]:.1f},{t_left[1]:.1f}"
-    left_pts = f"{t_left[0]:.1f},{t_left[1]:.1f} {t_bottom[0]:.1f},{t_bottom[1]:.1f} {b_bottom[0]:.1f},{b_bottom[1]:.1f} {b_left[0]:.1f},{b_left[1]:.1f}"
-    right_pts = f"{t_bottom[0]:.1f},{t_bottom[1]:.1f} {t_right[0]:.1f},{t_right[1]:.1f} {b_right[0]:.1f},{b_right[1]:.1f} {b_bottom[0]:.1f},{b_bottom[1]:.1f}"
-
-    cls = ' class="peak-cube"' if is_peak else ""
-    style = f' style="animation-delay: {delay_s:.2f}s"' if is_peak else ""
-
-    parts = [f'<g{cls}{style}>']
-    if h > 0.5:
-        parts.append(f'<polygon points="{left_pts}" fill="{left_fill}" stroke="{stroke_col}" stroke-width="0.35"/>')
-        parts.append(f'<polygon points="{right_pts}" fill="{right_fill}" stroke="{stroke_col}" stroke-width="0.35"/>')
-    parts.append(f'<polygon points="{top_pts}" fill="{top_fill}" stroke="{stroke_col}" stroke-width="0.4"/>')
-    parts.append("</g>")
-    return "".join(parts)
-
-
-def generate_svg(user_data, commit_hours, proc_rows, mode="dark"):
+def generate_svg(user_data, commit_hours, stack_stats, mode="dark"):
     cc = user_data["contributionsCollection"]
     cal = cc["contributionCalendar"]
     total_contribs = cal["totalContributions"]
@@ -252,10 +234,10 @@ def generate_svg(user_data, commit_hours, proc_rows, mode="dark"):
 
     active_days = 0
     max_day = 0
-    peak_coords = None
     weekly_totals = []
     flat_days = []
-    for w_idx, w in enumerate(weeks):
+
+    for w in weeks:
         w_sum = 0
         for d in w["contributionDays"]:
             c = d["contributionCount"]
@@ -263,19 +245,12 @@ def generate_svg(user_data, commit_hours, proc_rows, mode="dark"):
             w_sum += c
             if c > 0:
                 active_days += 1
-            if c >= max_day and c > 0:
+            if c > max_day:
                 max_day = c
-                peak_coords = (w_idx, d["weekday"], c)
         weekly_totals.append(w_sum)
 
-    # Dynamic load average (3d, 7d, 30d commit density)
-    last_3d = sum(flat_days[-3:]) if len(flat_days) >= 3 else 0
-    last_7d = sum(flat_days[-7:]) if len(flat_days) >= 7 else 0
-    last_30d = sum(flat_days[-30:]) if len(flat_days) >= 30 else 0
-    load_1 = max(0.08, round((last_3d / 3.0) / 3.2, 2))
-    load_5 = max(0.10, round((last_7d / 7.0) / 3.2, 2))
-    load_15 = max(0.12, round((last_30d / 30.0) / 3.2, 2))
-
+    active_weeks = sum(1 for w in weekly_totals if w > 0)
+    last_30d = sum(flat_days[-30:]) if len(flat_days) >= 30 else sum(flat_days)
     avg_wk = total_contribs / max(1, len(weekly_totals))
     max_wk = max(weekly_totals) if weekly_totals else 0
 
@@ -283,17 +258,14 @@ def generate_svg(user_data, commit_hours, proc_rows, mode="dark"):
     pub_pct = round(100.0 - priv_pct, 1)
 
     today = datetime.date.today()
+    today_iso = today.isoformat()
     typo_fixed_date = datetime.date(2026, 10, 15)
     typo_free_days = max(1, (today - typo_fixed_date).days)
-    uptime_days = max(1, (today - datetime.date(2023, 3, 26)).days)
-    up_y = uptime_days // 365
-    up_d = uptime_days % 365
 
     if mode == "dark":
         bg = "#0c1017"
         term_bar = "#111722"
         panel_bg = "#0f141d"
-        row_alt = "#141b26"
         panel_border = "#263244"
         grid_line = "#1b2432"
         text_main = "#d8dee9"
@@ -302,21 +274,20 @@ def generate_svg(user_data, commit_hours, proc_rows, mode="dark"):
         accent = "#10b981"
         accent_cyan = "#38bdf8"
         accent_warn = "#f59e0b"
-        accent_zombie = "#ef4444"
+        accent_slate = "#94a3b8"
         tmux_bg = "#131b26"
         tmux_pill_fg = "#090d12"
-        levels = [
-            ("#151d2a", "#0f1620", "#0b1018", "#1e293b"),  # 0
-            ("#065f46", "#064e3b", "#022c22", "#047857"),  # 1
-            ("#059669", "#047857", "#065f46", "#10b981"),  # 2
-            ("#10b981", "#059669", "#047857", "#34d399"),  # 3
-            ("#34d399", "#10b981", "#059669", "#6ee7b7"),  # 4
+        cell_levels = [
+            ("#151d2a", "#1e293b"),  # 0: empty
+            ("#065f46", "#047857"),  # 1: 1-2
+            ("#059669", "#10b981"),  # 2: 3-6
+            ("#10b981", "#34d399"),  # 3: 7-14
+            ("#34d399", "#6ee7b7"),  # 4: 15+
         ]
     else:
         bg = "#f1f5f9"
         term_bar = "#e2e8f0"
         panel_bg = "#ffffff"
-        row_alt = "#f8fafc"
         panel_border = "#cbd5e1"
         grid_line = "#e2e8f0"
         text_main = "#0f172a"
@@ -325,173 +296,189 @@ def generate_svg(user_data, commit_hours, proc_rows, mode="dark"):
         accent = "#059669"
         accent_cyan = "#0284c7"
         accent_warn = "#d97706"
-        accent_zombie = "#dc2626"
+        accent_slate = "#64748b"
         tmux_bg = "#e2e8f0"
         tmux_pill_fg = "#ffffff"
-        levels = [
-            ("#e2e8f0", "#cbd5e1", "#94a3b8", "#cbd5e1"),  # 0
-            ("#a7f3d0", "#6ee7b7", "#34d399", "#6ee7b7"),  # 1
-            ("#34d399", "#10b981", "#059669", "#10b981"),  # 2
-            ("#10b981", "#059669", "#047857", "#059669"),  # 3
-            ("#059669", "#047857", "#065f46", "#047857"),  # 4
+        cell_levels = [
+            ("#e2e8f0", "#cbd5e1"),  # 0: empty
+            ("#a7f3d0", "#6ee7b7"),  # 1: 1-2
+            ("#34d399", "#10b981"),  # 2: 3-6
+            ("#10b981", "#059669"),  # 3: 7-14
+            ("#047857", "#065f46"),  # 4: 15+
         ]
 
-    # 3D Isometric Grid in Pane 1 (x=12..388, y=38..314)
-    wx = 4.65
-    wy = 2.45
-    origin_x = 76.0
-    origin_y = 160.0
+    color_map = {
+        "accent": accent,
+        "cyan": accent_cyan,
+        "warn": accent_warn,
+        "muted": accent_slate,
+    }
 
-    cubes_svg = []
-    peak_marker_svg = ""
+    # =========================================================================
+    # PANE 1: 2D Terminal Heatmap (x=12..472, y=38..178)
+    # =========================================================================
+    grid_x0 = 46.0
+    grid_y0 = 75.0
+    pitch_x = 7.75
+    pitch_y = 10.4
+    cell_w = 5.9
+    cell_h = 8.4
+
+    cells_svg = []
     month_labels_svg = []
     seen_months = set()
+    last_label_x = -30.0
     month_names = ["", "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
 
     for w_idx, w in enumerate(weeks):
         days = w["contributionDays"]
-        if days:
-            first_date = days[0].get("date", "")
-            if len(first_date) >= 7:
+        gx = grid_x0 + w_idx * pitch_x
+
+        for d in days:
+            first_date = d.get("date", "")
+            if len(first_date) >= 10 and first_date[8:10] in ("01", "02", "03", "04", "05", "06", "07"):
                 ym = first_date[:7]
                 m_num = int(first_date[5:7])
-                if ym not in seen_months and w_idx % 8 == 2:
+                if ym not in seen_months and (gx - last_label_x) >= 22.0 and gx <= 438.0:
                     seen_months.add(ym)
-                    mx = origin_x + (w_idx * wx) - (7.2 * 3.8)
-                    my = origin_y + (w_idx * wy * 0.52) + (7.2 * 4.2) + 8
+                    last_label_x = gx
                     month_labels_svg.append(
-                        f'<text x="{mx:.1f}" y="{my:.1f}" fill="{text_dim}" font-size="7.5" class="mono">{month_names[m_num]}</text>'
+                        f'<text x="{gx:.1f}" y="{grid_y0 - 4.0:.1f}" fill="{text_dim}" font-size="7.5" class="mono">{month_names[m_num]}</text>'
                     )
+                break
 
         for d in days:
             d_idx = d["weekday"]
             c = d["contributionCount"]
-            cx = origin_x + (w_idx * wx) - (d_idx * 3.8)
-            cy = origin_y + (w_idx * wy * 0.52) + (d_idx * 4.2)
+            gy = grid_y0 + d_idx * pitch_y
             if c == 0:
                 lvl = 0
-                h = 1.4
             elif c <= 2:
                 lvl = 1
-                h = 5.5 + c * 2.0
             elif c <= 6:
                 lvl = 2
-                h = 11.5 + (c - 2) * 2.4
             elif c <= 14:
                 lvl = 3
-                h = 21.0 + (c - 6) * 1.7
             else:
                 lvl = 4
-                h = min(50.0, 34.0 + (c - 14) * 1.0)
+            fill_c, stroke_c = cell_levels[lvl]
+            cells_svg.append(
+                f'<rect x="{gx:.1f}" y="{gy:.1f}" width="{cell_w}" height="{cell_h}" rx="1.4" fill="{fill_c}" stroke="{stroke_c}" stroke-width="0.45"/>'
+            )
 
-            is_peak = lvl >= 3
-            delay = ((w_idx * 7 + d_idx) % 20) * 0.15
-            cubes_svg.append(render_iso_cube(cx, cy, h, 3.75, 2.05, levels[lvl], delay, is_peak))
+    # Legend cells in Pane 1 footer
+    legend_cells_svg = []
+    lx0 = 70.0
+    for idx, (fill_c, stroke_c) in enumerate(cell_levels):
+        lx = lx0 + idx * 10.0
+        legend_cells_svg.append(
+            f'<rect x="{lx:.1f}" y="160.5" width="6.5" height="6.5" rx="1.2" fill="{fill_c}" stroke="{stroke_c}" stroke-width="0.45"/>'
+        )
 
-            if peak_coords and (w_idx, d_idx) == (peak_coords[0], peak_coords[1]):
-                py_top = cy - 2.05 - h - 5
-                peak_marker_svg = (
-                    f'<line x1="{cx:.1f}" y1="{py_top:.1f}" x2="{cx:.1f}" y2="{py_top - 10:.1f}" stroke="{accent_cyan}" stroke-width="0.9" stroke-dasharray="1.5,1.5"/>'
-                    f'<text x="{cx:.1f}" y="{py_top - 13:.1f}" text-anchor="middle" fill="{accent_cyan}" font-size="8" font-weight="bold" class="mono">{c}/d</text>'
-                )
-
-    # Split bar in Pane 1 (x=284..374)
-    split_total_w = 88.0
+    split_total_w = 72.0
     priv_bar_w = (priv_pct / 100.0) * split_total_w
 
-    # Pane 2: Weekly Commit Oscilloscope (x=398..646, y=38..160)
-    osc_x0, osc_x1 = 410, 634
-    osc_y0, osc_y1 = 72, 140
-    max_w_val = max(max_wk, 10)
-    osc_pts = []
-    area_pts = [f"{osc_x0},{osc_y1}"]
-    n_weeks = len(weekly_totals)
-    for i, val in enumerate(weekly_totals):
-        px = osc_x0 + (i / max(1, n_weeks - 1)) * (osc_x1 - osc_x0)
-        py = osc_y1 - (val / max_w_val) * (osc_y1 - osc_y0 - 6)
-        osc_pts.append(f"{px:.1f},{py:.1f}")
-        area_pts.append(f"{px:.1f},{py:.1f}")
-    area_pts.append(f"{osc_x1},{osc_y1}")
-    osc_polyline = " ".join(osc_pts)
-    osc_area = " ".join(area_pts)
-
-    # Pane 3: 24h Circadian Histogram (x=656..868, y=38..160)
-    hist_x0, hist_x1 = 668, 856
-    hist_y0, hist_y1 = 76, 140
+    # =========================================================================
+    # PANE 2: 24h Circadian Histogram (x=482..868, y=38..178)
+    # =========================================================================
+    hist_x0, hist_x1 = 496.0, 854.0
+    hist_y0, hist_y1 = 68.0, 148.0
     max_hr = max(max(commit_hours), 1)
-    bar_w = (hist_x1 - hist_x0) / 24.0
+    total_hr = max(sum(commit_hours), 1)
+    night_commits = sum(commit_hours[h] for h in range(24) if h >= 22 or h <= 4)
+    night_pct = round((night_commits / total_hr) * 100.0, 1)
+    day_pct = round(100.0 - night_pct, 1)
+    peak_hr = max(range(24), key=lambda h: commit_hours[h])
+
+    bar_step = (hist_x1 - hist_x0) / 24.0
+    bar_w = bar_step - 2.6
     bars_svg = []
     for hr, count in enumerate(commit_hours):
-        bh = max(1.8, (count / max_hr) * (hist_y1 - hist_y0))
-        bx = hist_x0 + hr * bar_w
+        bh = max(2.0, (count / max_hr) * (hist_y1 - hist_y0))
+        bx = hist_x0 + hr * bar_step
         by = hist_y1 - bh
         bars_svg.append(
-            f'<rect x="{bx:.1f}" y="{hist_y0}" width="{bar_w - 2.0:.1f}" height="{hist_y1 - hist_y0}" rx="1" fill="{grid_line}" opacity="0.35"/>'
+            f'<rect x="{bx:.1f}" y="{hist_y0:.1f}" width="{bar_w:.1f}" height="{hist_y1 - hist_y0:.1f}" rx="1.2" fill="{grid_line}" opacity="0.35"/>'
         )
         if hr >= 22 or hr <= 4:
             bcol = accent_cyan if count > 0 else grid_line
         else:
             bcol = accent if count > 0 else grid_line
         bars_svg.append(
-            f'<rect x="{bx:.1f}" y="{by:.1f}" width="{bar_w - 2.0:.1f}" height="{bh:.1f}" rx="1" fill="{bcol}" opacity="0.92"/>'
+            f'<rect x="{bx:.1f}" y="{by:.1f}" width="{bar_w:.1f}" height="{bh:.1f}" rx="1.2" fill="{bcol}" opacity="0.92"/>'
         )
 
-    # Pane 4: Dynamic Process Rows
-    running_count = sum(1 for r in proc_rows if r["state"] == "R")
-    proc_svg_lines = []
-    row_ys = [210, 227, 244, 261, 278]
-    for idx, r in enumerate(proc_rows[:5]):
+    # =========================================================================
+    # PANE 3: Weekly Commit Throughput (x=12..472, y=188..302)
+    # =========================================================================
+    osc_x0 = grid_x0
+    osc_x1 = grid_x0 + (max(1, len(weekly_totals) - 1)) * pitch_x + cell_w
+    osc_y0, osc_y1 = 216.0, 280.0
+    max_w_val = max(max_wk, 10)
+    osc_pts = []
+    area_pts = [f"{osc_x0:.1f},{osc_y1:.1f}"]
+    peak_dots_svg = []
+    n_weeks = len(weekly_totals)
+    for i, val in enumerate(weekly_totals):
+        px = osc_x0 + (i / max(1, n_weeks - 1)) * (osc_x1 - osc_x0)
+        py = osc_y1 - (val / max_w_val) * (osc_y1 - osc_y0 - 4.0)
+        osc_pts.append(f"{px:.1f},{py:.1f}")
+        area_pts.append(f"{px:.1f},{py:.1f}")
+        if val >= max_w_val * 0.45 and val > 0:
+            peak_dots_svg.append(f'<circle cx="{px:.1f}" cy="{py:.1f}" r="1.8" fill="{accent_cyan}"/>')
+    area_pts.append(f"{osc_x1:.1f},{osc_y1:.1f}")
+    osc_polyline = " ".join(osc_pts)
+    osc_area = " ".join(area_pts)
+
+    # =========================================================================
+    # PANE 4: Stack & Repository Telemetry (x=482..868, y=188..302)
+    # =========================================================================
+    stack_bar_x0 = 496.0
+    stack_bar_w = 358.0
+    stack_segments_svg = []
+    cur_x = stack_bar_x0
+    for r in stack_stats["rows"]:
+        seg_w = max(2.0, (r["pct"] / 100.0) * stack_bar_w)
+        if cur_x + seg_w > stack_bar_x0 + stack_bar_w:
+            seg_w = max(0.0, (stack_bar_x0 + stack_bar_w) - cur_x)
+        col = color_map[r["col_key"]]
+        stack_segments_svg.append(
+            f'<rect x="{cur_x:.1f}" y="211" width="{seg_w:.1f}" height="6" rx="1" fill="{col}" opacity="0.92"/>'
+        )
+        cur_x += seg_w
+
+    stack_rows_svg = []
+    row_ys = [234, 251, 268, 285]
+    for idx, r in enumerate(stack_stats["rows"][:4]):
         ry = row_ys[idx]
-        s_col = accent if r["state"] == "R" else text_muted
-        b_col = accent_cyan if r["bin_col"] == "cyan" else accent
-        pid_s = f"{r['pid']:>5}"
-        cpu_s = f"{r['cpu']:>5.1f}"
-        mem_s = f"{r['mem']:>5}"
-        time_s = f"{r['time']:>7}"
-        proc_svg_lines.append(
-            f'  <text x="410" y="{ry}" fill="{text_main}" font-size="8.5" class="mono" xml:space="preserve">'
-            f'{pid_s}  <tspan fill="{s_col}" font-weight="bold">{r["state"]}</tspan>  {cpu_s}  {mem_s}  {time_s}   '
-            f'<tspan fill="{b_col}">{r["bin"]}</tspan> {r["args"]}</text>'
+        col = color_map[r["col_key"]]
+        bar_bg_x = 588.0
+        bar_max_w = 72.0
+        fill_w = max(3.0, (r["pct"] / 100.0) * bar_max_w)
+        pct_str = f"{r['pct']:>4.1f}%"
+        stack_rows_svg.append(
+            f'  <circle cx="500" cy="{ry - 3}" r="2.5" fill="{col}"/>'
+            f'<text x="508" y="{ry}" fill="{text_main}" font-size="8.5" font-weight="bold" class="mono">{r["label"]}</text>'
+            f'<rect x="{bar_bg_x}" y="{ry - 6.5}" width="{bar_max_w}" height="5" rx="1.5" fill="{grid_line}"/>'
+            f'<rect x="{bar_bg_x}" y="{ry - 6.5}" width="{fill_w:.1f}" height="5" rx="1.5" fill="{col}"/>'
+            f'<text x="698" y="{ry}" text-anchor="end" fill="{text_main}" font-size="8.2" class="mono">{pct_str}</text>'
+            f'<text x="708" y="{ry}" fill="{text_muted}" font-size="8" class="mono">│ {r[" desc"] if " desc" in r else r["desc"]}</text>'
         )
-    proc_block_svg = "\n".join(proc_svg_lines)
+    stack_block_svg = "\n".join(stack_rows_svg)
 
-    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 352" width="100%" height="100%">
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 340" width="100%" height="100%">
   <defs>
     <linearGradient id="oscGrad" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="{accent}" stop-opacity="0.35"/>
+      <stop offset="0%" stop-color="{accent}" stop-opacity="0.32"/>
       <stop offset="100%" stop-color="{accent}" stop-opacity="0.0"/>
     </linearGradient>
-    <linearGradient id="scanGrad" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="{accent_cyan}" stop-opacity="0.0"/>
-      <stop offset="50%" stop-color="{accent_cyan}" stop-opacity="0.28"/>
-      <stop offset="100%" stop-color="{accent_cyan}" stop-opacity="0.0"/>
-    </linearGradient>
-    <clipPath id="oscClip">
-      <rect x="{osc_x0}" y="{osc_y0 - 8}" width="{osc_x1 - osc_x0}" height="{osc_y1 - osc_y0 + 12}"/>
-    </clipPath>
     <style>
       .mono {{ font-family: 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace; }}
-      .led-ok {{ animation: blinkOk 2.8s infinite ease-in-out; }}
-      .scanline {{ animation: sweep 6s infinite linear; }}
-      .peak-cube {{ animation: floatPeak 3.4s infinite ease-in-out; }}
-      .pulse-path {{ stroke-dasharray: 700; stroke-dashoffset: 700; animation: drawWave 2.8s ease-out forwards; }}
-      @keyframes blinkOk {{ 0%, 100% {{ opacity: 0.95; }} 50% {{ opacity: 0.25; }} }}
-      @keyframes sweep {{
-        0% {{ transform: translateX(-45px); }}
-        100% {{ transform: translateX(240px); }}
-      }}
-      @keyframes floatPeak {{
-        0%, 100% {{ filter: brightness(1.0); }}
-        50% {{ filter: brightness(1.24); }}
-      }}
-      @keyframes drawWave {{
-        to {{ stroke-dashoffset: 0; }}
-      }}
     </style>
   </defs>
 
   <!-- Outer Terminal Window -->
-  <rect x="2" y="2" width="876" height="348" rx="6" fill="{bg}" stroke="{panel_border}" stroke-width="1.2"/>
+  <rect x="2" y="2" width="876" height="336" rx="6" fill="{bg}" stroke="{panel_border}" stroke-width="1.2"/>
 
   <!-- Terminal Window Header Bar -->
   <path d="M 2 8 Q 2 2 8 2 L 872 2 Q 878 2 878 8 L 878 28 L 2 28 Z" fill="{term_bar}"/>
@@ -499,105 +486,138 @@ def generate_svg(user_data, commit_hours, proc_rows, mode="dark"):
   <circle cx="16" cy="15" r="3.2" fill="{text_dim}" opacity="0.6"/>
   <circle cx="27" cy="15" r="3.2" fill="{text_dim}" opacity="0.6"/>
   <circle cx="38" cy="15" r="3.2" fill="{text_dim}" opacity="0.6"/>
-  <text x="440" y="18.5" text-anchor="middle" fill="{text_muted}" font-size="10" class="mono">berndof@fln-noc: ~ (tmux)</text>
-  <text x="866" y="18.5" text-anchor="end" fill="{text_muted}" font-size="9" class="mono">up {up_y}y {up_d}d │ load: {load_1:.2f} {load_5:.2f} {load_15:.2f}</text>
+  <text x="440" y="18.5" text-anchor="middle" fill="{text_muted}" font-size="9.5" class="mono">berndof :: github telemetry</text>
+  <text x="866" y="18.5" text-anchor="end" fill="{text_muted}" font-size="8.5" class="mono">snapshot: {today_iso} │ sync: 12h cron</text>
 
   <!-- ======================================================================= -->
-  <!-- PANE 1: 3D Isometric Commit Matrix (btop box style)                     -->
+  <!-- PANE 1: 2D Contribution Heatmap (52w)                                   -->
   <!-- ======================================================================= -->
-  <rect x="12" y="38" width="376" height="276" rx="3" fill="{panel_bg}" stroke="{panel_border}" stroke-width="1"/>
+  <rect x="12" y="38" width="460" height="140" rx="3" fill="{panel_bg}" stroke="{panel_border}" stroke-width="1"/>
   <rect x="22" y="32" width="114" height="11" fill="{panel_bg}"/>
   <text x="26" y="41" fill="{text_main}" font-size="9.5" class="mono"><tspan fill="{text_muted}">┤</tspan><tspan fill="{accent}" font-weight="bold">¹</tspan> commits (52w)<tspan fill="{text_muted}">├</tspan></text>
 
-  <text x="24" y="57" fill="{text_muted}" font-size="9" class="mono"><tspan fill="{text_main}" font-weight="bold">{total_contribs}</tspan> total  │  <tspan fill="{accent_cyan}" font-weight="bold">{active_days}d</tspan> active  │  max <tspan fill="{accent}" font-weight="bold">{max_day}/d</tspan></text>
-  <text x="24" y="71" fill="{text_muted}" font-size="8.5" class="mono">split: <tspan fill="{accent}">{priv_pct}% @gruposcc</tspan> / <tspan fill="{accent_cyan}">{pub_pct}% pub</tspan></text>
+  <text x="24" y="56" fill="{text_muted}" font-size="8.5" class="mono"><tspan fill="{text_main}" font-weight="bold">{total_contribs}</tspan> total │ <tspan fill="{accent_cyan}" font-weight="bold">{active_days}d</tspan> active │ max <tspan fill="{accent}" font-weight="bold">{max_day}/d</tspan></text>
+  <text x="458" y="56" text-anchor="end" fill="{text_muted}" font-size="8.2" class="mono"><tspan fill="{accent}">{priv_pct}% @gruposcc</tspan> / <tspan fill="{accent_cyan}">{pub_pct}% pub</tspan></text>
 
-  <!-- Mini Split Bar -->
-  <rect x="284" y="64" width="{split_total_w}" height="5" rx="2" fill="{accent_cyan}" opacity="0.8"/>
-  <rect x="284" y="64" width="{priv_bar_w:.1f}" height="5" rx="2" fill="{accent}"/>
+  <!-- Weekday Labels -->
+  <text x="24" y="91" fill="{text_dim}" font-size="7.2" class="mono">mon</text>
+  <text x="24" y="112" fill="{text_dim}" font-size="7.2" class="mono">wed</text>
+  <text x="24" y="133" fill="{text_dim}" font-size="7.2" class="mono">fri</text>
 
-  <!-- 3D Isometric Cubes & Month Ticks -->
-  <g transform="translate(0, 6)">
-    {"".join(month_labels_svg)}
-    {"".join(cubes_svg)}
-    {peak_marker_svg}
-  </g>
+  <!-- Month Ticks & 2D Cells -->
+  {"".join(month_labels_svg)}
+  {"".join(cells_svg)}
 
-  <text x="24" y="303" fill="{text_muted}" font-size="8" class="mono">z-scale: ░ 0   ▒ 1-2   ▓ 3-6   █ 15+ (3am rabbit hole)</text>
-
-  <!-- ======================================================================= -->
-  <!-- PANE 2: Weekly Commit Rate Oscilloscope                                 -->
-  <!-- ======================================================================= -->
-  <rect x="398" y="38" width="248" height="122" rx="3" fill="{panel_bg}" stroke="{panel_border}" stroke-width="1"/>
-  <rect x="408" y="32" width="124" height="11" fill="{panel_bg}"/>
-  <text x="412" y="41" fill="{text_main}" font-size="9.5" class="mono"><tspan fill="{text_muted}">┤</tspan><tspan fill="{accent}" font-weight="bold">²</tspan> throughput (wk)<tspan fill="{text_muted}">├</tspan></text>
-  <text x="636" y="56" text-anchor="end" fill="{text_muted}" font-size="8.5" class="mono">avg <tspan fill="{text_main}">{avg_wk:.1f}/w</tspan> · max <tspan fill="{accent}">{max_wk}/w</tspan></text>
-
-  <line x1="{osc_x0}" y1="88" x2="{osc_x1}" y2="88" stroke="{grid_line}" stroke-width="0.8" stroke-dasharray="2,3"/>
-  <line x1="{osc_x0}" y1="114" x2="{osc_x1}" y2="114" stroke="{grid_line}" stroke-width="0.8" stroke-dasharray="2,3"/>
-  <line x1="{osc_x0}" y1="{osc_y1}" x2="{osc_x1}" y2="{osc_y1}" stroke="{grid_line}" stroke-width="1"/>
-
-  <g clip-path="url(#oscClip)">
-    <polygon points="{osc_area}" fill="url(#oscGrad)"/>
-    <polyline points="{osc_polyline}" fill="none" stroke="{accent}" stroke-width="1.7" class="pulse-path"/>
-    <rect x="{osc_x0}" y="{osc_y0 - 6}" width="40" height="{osc_y1 - osc_y0 + 10}" fill="url(#scanGrad)" class="scanline"/>
-  </g>
-
-  <text x="{osc_x0}" y="151" fill="{text_dim}" font-size="7.5" class="mono">-52w</text>
-  <text x="{(osc_x0 + osc_x1) / 2:.0f}" y="151" text-anchor="middle" fill="{text_dim}" font-size="7.5" class="mono">-26w</text>
-  <text x="{osc_x1}" y="151" text-anchor="end" fill="{text_dim}" font-size="7.5" class="mono">now</text>
+  <!-- Footer Legend & Split Bar -->
+  <text x="24" y="166.5" fill="{text_muted}" font-size="7.8" class="mono">less</text>
+  {"".join(legend_cells_svg)}
+  <text x="124" y="166.5" fill="{text_muted}" font-size="7.8" class="mono">more (0 · 1-2 · 3-6 · 7-14 · 15+/d)</text>
+  <rect x="386" y="161.5" width="{split_total_w}" height="4.5" rx="2" fill="{accent_cyan}" opacity="0.85"/>
+  <rect x="386" y="161.5" width="{priv_bar_w:.1f}" height="4.5" rx="2" fill="{accent}"/>
 
   <!-- ======================================================================= -->
-  <!-- PANE 3: Circadian Activity (24h BRT / UTC-3)                            -->
+  <!-- PANE 2: Circadian Activity (24h BRT / UTC-3)                            -->
   <!-- ======================================================================= -->
-  <rect x="656" y="38" width="212" height="122" rx="3" fill="{panel_bg}" stroke="{panel_border}" stroke-width="1"/>
-  <rect x="666" y="32" width="114" height="11" fill="{panel_bg}"/>
-  <text x="670" y="41" fill="{text_main}" font-size="9.5" class="mono"><tspan fill="{text_muted}">┤</tspan><tspan fill="{accent_cyan}" font-weight="bold">³</tspan> hours (utc-3)<tspan fill="{text_muted}">├</tspan></text>
+  <rect x="482" y="38" width="386" height="140" rx="3" fill="{panel_bg}" stroke="{panel_border}" stroke-width="1"/>
+  <rect x="492" y="32" width="114" height="11" fill="{panel_bg}"/>
+  <text x="496" y="41" fill="{text_main}" font-size="9.5" class="mono"><tspan fill="{text_muted}">┤</tspan><tspan fill="{accent_cyan}" font-weight="bold">²</tspan> hours (utc-3)<tspan fill="{text_muted}">├</tspan></text>
 
-  <text x="668" y="56" fill="{text_muted}" font-size="8" class="mono"><tspan fill="{accent_cyan}">■</tspan> 22-04h "so mais um fix"</text>
+  <text x="496" y="56" fill="{text_muted}" font-size="8.2" class="mono"><tspan fill="{accent}">■</tspan> day {day_pct}%   <tspan fill="{accent_cyan}">■</tspan> 22-04h {night_pct}%</text>
+  <text x="854" y="56" text-anchor="end" fill="{text_muted}" font-size="8.2" class="mono">peak: <tspan fill="{text_main}" font-weight="bold">{peak_hr:02d}:00</tspan></text>
 
   {"".join(bars_svg)}
   <line x1="{hist_x0}" y1="{hist_y1}" x2="{hist_x1}" y2="{hist_y1}" stroke="{grid_line}" stroke-width="1"/>
-  <text x="668" y="151" fill="{text_dim}" font-size="7.5" class="mono">00h</text>
-  <text x="715" y="151" fill="{text_dim}" font-size="7.5" class="mono">06h</text>
-  <text x="762" y="151" fill="{text_dim}" font-size="7.5" class="mono">12h</text>
-  <text x="809" y="151" fill="{text_dim}" font-size="7.5" class="mono">18h</text>
-  <text x="856" y="151" text-anchor="end" fill="{text_dim}" font-size="7.5" class="mono">23h</text>
+  <text x="496" y="164" fill="{text_dim}" font-size="7.5" class="mono">00h</text>
+  <text x="585" y="164" fill="{text_dim}" font-size="7.5" class="mono">06h</text>
+  <text x="675" y="164" fill="{text_dim}" font-size="7.5" class="mono">12h</text>
+  <text x="764" y="164" fill="{text_dim}" font-size="7.5" class="mono">18h</text>
+  <text x="854" y="164" text-anchor="end" fill="{text_dim}" font-size="7.5" class="mono">23h</text>
 
   <!-- ======================================================================= -->
-  <!-- PANE 4: Process Table (btop / htop dynamic proc view)                   -->
+  <!-- PANE 3: Weekly Commit Throughput                                        -->
   <!-- ======================================================================= -->
-  <rect x="398" y="170" width="470" height="144" rx="3" fill="{panel_bg}" stroke="{panel_border}" stroke-width="1"/>
-  <rect x="408" y="164" width="144" height="11" fill="{panel_bg}"/>
-  <text x="412" y="173" fill="{text_main}" font-size="9.5" class="mono"><tspan fill="{text_muted}">┤</tspan><tspan fill="{accent}" font-weight="bold">⁴</tspan> proc (user=berndof)<tspan fill="{text_muted}">├</tspan></text>
-  <text x="856" y="173" text-anchor="end" fill="{text_muted}" font-size="8.5" class="mono">tasks: <tspan fill="{text_main}">6</tspan> (<tspan fill="{accent}">{running_count} running</tspan>, <tspan fill="{accent_warn}">1 zombie</tspan>)</text>
+  <rect x="12" y="188" width="460" height="114" rx="3" fill="{panel_bg}" stroke="{panel_border}" stroke-width="1"/>
+  <rect x="22" y="182" width="126" height="11" fill="{panel_bg}"/>
+  <text x="26" y="191" fill="{text_main}" font-size="9.5" class="mono"><tspan fill="{text_muted}">┤</tspan><tspan fill="{accent}" font-weight="bold">³</tspan> throughput (wk)<tspan fill="{text_muted}">├</tspan></text>
 
-  <!-- Table Header -->
-  <text x="410" y="190" fill="{text_muted}" font-size="8.5" font-weight="bold" class="mono" xml:space="preserve">  PID  S   CPU%   MEM     TIME+   COMMAND</text>
-  <line x1="406" y1="195" x2="860" y2="195" stroke="{grid_line}" stroke-width="1"/>
+  <text x="24" y="206" fill="{text_muted}" font-size="8.2" class="mono">30d: <tspan fill="{text_main}" font-weight="bold">{last_30d}</tspan> commits │ active: <tspan fill="{text_main}">{active_weeks}/52w</tspan></text>
+  <text x="458" y="206" text-anchor="end" fill="{text_muted}" font-size="8.2" class="mono">avg <tspan fill="{text_main}">{avg_wk:.1f}/w</tspan> · max <tspan fill="{accent}" font-weight="bold">{max_wk}/w</tspan></text>
 
-  <!-- Alternating Row Highlights -->
-  <rect x="404" y="199" width="458" height="16" rx="1.5" fill="{row_alt}"/>
-  <rect x="404" y="233" width="458" height="16" rx="1.5" fill="{row_alt}"/>
-  <rect x="404" y="267" width="458" height="16" rx="1.5" fill="{row_alt}"/>
+  <line x1="{osc_x0:.1f}" y1="236" x2="{osc_x1:.1f}" y2="236" stroke="{grid_line}" stroke-width="0.8" stroke-dasharray="2,3"/>
+  <line x1="{osc_x0:.1f}" y1="258" x2="{osc_x1:.1f}" y2="258" stroke="{grid_line}" stroke-width="0.8" stroke-dasharray="2,3"/>
+  <line x1="{osc_x0:.1f}" y1="{osc_y1:.1f}" x2="{osc_x1:.1f}" y2="{osc_y1:.1f}" stroke="{grid_line}" stroke-width="1"/>
 
-  <!-- Dynamic Process Rows (sorted by live activity) -->
-{proc_block_svg}
-  <text x="410" y="295" fill="{text_muted}" font-size="8.5" class="mono" xml:space="preserve">  817  <tspan fill="{accent_zombie}" font-weight="bold">Z</tspan>    0.0    0B      0:00   <tspan fill="{text_muted}">[Hello, Wolrd!] &lt;defunct&gt;</tspan></text>
+  <polygon points="{osc_area}" fill="url(#oscGrad)"/>
+  <polyline points="{osc_polyline}" fill="none" stroke="{accent}" stroke-width="1.6"/>
+  {"".join(peak_dots_svg)}
+
+  <text x="{osc_x0:.1f}" y="294" fill="{text_dim}" font-size="7.5" class="mono">-52w</text>
+  <text x="{(osc_x0 + osc_x1) / 2:.1f}" y="294" text-anchor="middle" fill="{text_dim}" font-size="7.5" class="mono">-26w</text>
+  <text x="{osc_x1:.1f}" y="294" text-anchor="end" fill="{text_dim}" font-size="7.5" class="mono">now</text>
 
   <!-- ======================================================================= -->
-  <!-- BOTTOM TMUX STATUS BAR                                                  -->
+  <!-- PANE 4: Stack & Repository Telemetry                                    -->
   <!-- ======================================================================= -->
-  <rect x="12" y="322" width="856" height="20" rx="2.5" fill="{tmux_bg}" stroke="{panel_border}" stroke-width="0.8"/>
-  <rect x="12" y="322" width="64" height="20" rx="2.5" fill="{accent}"/>
-  <circle cx="23" cy="332" r="2.8" fill="{tmux_pill_fg}" class="led-ok"/>
-  <text x="46" y="335" text-anchor="middle" fill="{tmux_pill_fg}" font-size="8.8" font-weight="bold" class="mono">0:noc</text>
+  <rect x="482" y="188" width="386" height="114" rx="3" fill="{panel_bg}" stroke="{panel_border}" stroke-width="1"/>
+  <rect x="492" y="182" width="120" height="11" fill="{panel_bg}"/>
+  <text x="496" y="191" fill="{text_main}" font-size="9.5" class="mono"><tspan fill="{text_muted}">┤</tspan><tspan fill="{accent}" font-weight="bold">⁴</tspan> stack &amp; repos<tspan fill="{text_muted}">├</tspan></text>
+  <text x="854" y="204" text-anchor="end" fill="{text_muted}" font-size="8.2" class="mono"><tspan fill="{text_main}" font-weight="bold">{stack_stats["total_repos"]}</tspan> repos ({stack_stats["priv_repos"]} priv · {stack_stats["pub_repos"]} pub)</text>
+  <text x="496" y="204" fill="{text_muted}" font-size="8.2" class="mono">profile: <tspan fill="{accent}">lightweight</tspan> · <tspan fill="{accent_cyan}">low boilerplate</tspan></text>
 
-  <text x="88" y="335" fill="{text_muted}" font-size="8.8" class="mono"><tspan fill="{text_main}" font-weight="bold">0:btop*</tspan>   1:scc10-ssh   2:zabbix-proxy   3:rf-towers</text>
-  <text x="858" y="335" text-anchor="end" fill="{text_muted}" font-size="8.5" class="mono">py · ts · bash · php · sql  │  node_modules: <tspan fill="{accent}" font-weight="bold">0B</tspan>  │  typo-free: <tspan fill="{accent_warn}" font-weight="bold">{typo_free_days}d</tspan></text>
+  <!-- Proportional Stack Bar -->
+  {"".join(stack_segments_svg)}
+
+  <!-- Stack Breakdown Rows -->
+{stack_block_svg}
+
+  <!-- ======================================================================= -->
+  <!-- BOTTOM STATUS BAR                                                       -->
+  <!-- ======================================================================= -->
+  <rect x="12" y="310" width="856" height="20" rx="2.5" fill="{tmux_bg}" stroke="{panel_border}" stroke-width="0.8"/>
+  <rect x="12" y="310" width="68" height="20" rx="2.5" fill="{accent}"/>
+  <text x="46" y="323" text-anchor="middle" fill="{tmux_pill_fg}" font-size="8.5" font-weight="bold" class="mono">summary</text>
+
+  <text x="92" y="323" fill="{text_muted}" font-size="8.4" class="mono">prefer: <tspan fill="{text_main}">sh + python</tspan> │ <tspan fill="{text_main}">html + css + js</tspan> │ <tspan fill="{text_main}">raw sql</tspan> │ <tspan fill="{accent}">minimal boilerplate</tspan></text>
+  <text x="858" y="323" text-anchor="end" fill="{text_muted}" font-size="8.2" class="mono">typo-free: <tspan fill="{accent_warn}" font-weight="bold">{typo_free_days}d</tspan></text>
 </svg>
 """
     return svg
+
+
+def patch_snake_svgs(out_dir):
+    """
+    Patches Platane/snk generated SVG files so dark mode has crisp cell borders,
+    visible emerald levels even when max_day is high, and a cyan snake instead of
+    low-contrast dark purple.
+    """
+    dark_path = os.path.join(out_dir, "github-contribution-grid-snake-dark.svg")
+    light_path = os.path.join(out_dir, "github-contribution-grid-snake.svg")
+
+    if os.path.isfile(dark_path):
+        with open(dark_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        content = re.sub(
+            r":root\{[^}]+\}",
+            ":root{--cb:#26324488;--cs:#38bdf8;--ce:#121822;--c0:#121822;--c1:#047857;--c2:#10b981;--c3:#34d399;--c4:#6ee7b7}",
+            content,
+            count=1,
+        )
+        with open(dark_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        print(f"Patched dark snake palette in {dark_path}")
+
+    if os.path.isfile(light_path):
+        with open(light_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        content = re.sub(
+            r":root\{[^}]+\}",
+            ":root{--cb:#cbd5e177;--cs:#0284c7;--ce:#e2e8f0;--c0:#e2e8f0;--c1:#6ee7b7;--c2:#34d399;--c3:#10b981;--c4:#047857}",
+            content,
+            count=1,
+        )
+        with open(light_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        print(f"Patched light snake palette in {light_path}")
 
 
 def _mock_user_data():
@@ -610,30 +630,38 @@ def _mock_user_data():
             days.append({"contributionCount": c, "date": date_str, "weekday": d})
         weeks.append({"contributionDays": days})
     return {
+        "repositories": {"totalCount": 21, "nodes": []},
         "contributionsCollection": {
-            "totalCommitContributions": 54,
-            "restrictedContributionsCount": 341,
+            "totalCommitContributions": 58,
+            "restrictedContributionsCount": 827,
             "contributionCalendar": {
-                "totalContributions": 395,
+                "totalContributions": 893,
                 "weeks": weeks,
             },
-        }
+        },
     }
 
 
 def main():
     out_dir = os.environ.get("OUT_DIR", "dist")
     os.makedirs(out_dir, exist_ok=True)
-    user_data = fetch_data() or _mock_user_data()
-    commit_hours, proc_rows = fetch_live_telemetry()
 
-    dark_svg = generate_svg(user_data, commit_hours, proc_rows, mode="dark")
-    light_svg = generate_svg(user_data, commit_hours, proc_rows, mode="light")
+    if "--patch-snake-only" in sys.argv:
+        patch_snake_svgs(out_dir)
+        return
+
+    user_data = fetch_data() or _mock_user_data()
+    commit_hours = fetch_commit_hours(user_data)
+    stack_stats = compute_stack_stats(user_data)
+
+    dark_svg = generate_svg(user_data, commit_hours, stack_stats, mode="dark")
+    light_svg = generate_svg(user_data, commit_hours, stack_stats, mode="light")
 
     with open(os.path.join(out_dir, "noc-telemetry-dark.svg"), "w", encoding="utf-8") as f:
         f.write(dark_svg)
     with open(os.path.join(out_dir, "noc-telemetry-light.svg"), "w", encoding="utf-8") as f:
         f.write(light_svg)
+    patch_snake_svgs(out_dir)
     print(f"Generated {out_dir}/noc-telemetry-dark.svg and {out_dir}/noc-telemetry-light.svg successfully.")
 
 
