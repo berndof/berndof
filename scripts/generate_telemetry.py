@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 """
-Generates:
-1. noc-telemetry-{dark,light}.svg — 2x2 symmetrical terminal telemetry deck:
-   - Pane 1: 2D square-cell contribution matrix (52w)
-   - Pane 2: 24h circadian commit histogram (UTC-3)
-   - Pane 3: 52-week commit throughput oscilloscope (same size & X-axis as Pane 1)
-   - Pane 4: Commit-weighted stack & repository telemetry (auto-updates from commits)
-2. noc-pipeline-{dark,light}.svg — NOC-styled architecture & philosophy pipeline diagram
-3. Patches Platane/snk SVG palettes for high contrast in dark & light themes.
+Generates noc-telemetry-{dark,light}.svg — 2x2 symmetrical terminal telemetry deck:
+  - Pane 1: 2D square-cell contribution matrix (52w)
+  - Pane 2: 24h circadian commit histogram (UTC-3)
+  - Pane 3: 52-week commit throughput oscilloscope (same size & X-axis as Pane 1)
+  - Pane 4: Commit-weighted stack & repository telemetry (auto-updates from commits)
 
 Zero external dependencies (Python 3 stdlib only).
 """
@@ -16,9 +13,7 @@ import collections
 import datetime
 import json
 import os
-import re
 import subprocess
-import sys
 import urllib.request
 import xml.etree.ElementTree as ET
 
@@ -182,7 +177,7 @@ def analyze_repos_and_commits(user_data):
             elif lname in ("HTML", "CSS", "JavaScript", "Mako", "Jinja"):
                 cat = "html+css+js"
             else:
-                cat = "sql / php / ts"
+                cat = "ts / php / sql"
             repo_lang_scores[cat] += score
             cat_repos[cat].add(rname)
 
@@ -200,23 +195,23 @@ def analyze_repos_and_commits(user_data):
         cat_commit_weights["python"] = 37.4
         cat_commit_weights["sh / bash"] = 26.9
         cat_commit_weights["html+css+js"] = 22.2
-        cat_commit_weights["sql / php / ts"] = 13.5
+        cat_commit_weights["ts / php / sql"] = 13.5
         cat_repos["python"] = set(range(13))
         cat_repos["sh / bash"] = set(range(12))
         cat_repos["html+css+js"] = set(range(5))
-        cat_repos["sql / php / ts"] = set(range(5))
+        cat_repos["ts / php / sql"] = set(range(5))
         active_repos_count = 20
 
     meta = {
-        "python": ("daemons, cli &amp; data", "accent"),
-        "sh / bash": ("automation, cron &amp; glue", "cyan"),
-        "html+css+js": ("vanilla web, zero bloat", "warn"),
-        "sql / php / ts": ("schemas, portals &amp; types", "muted"),
+        "python": ("services, cli &amp; data", "accent"),
+        "sh / bash": ("automation &amp; tooling", "cyan"),
+        "html+css+js": ("hypermedia &amp; web ui", "warn"),
+        "ts / php / sql": ("providers, web &amp; sql", "muted"),
     }
 
     tot_w = sum(cat_commit_weights.values()) or 1.0
     rows = []
-    for key in ("python", "sh / bash", "html+css+js", "sql / php / ts"):
+    for key in ("python", "sh / bash", "html+css+js", "ts / php / sql"):
         pct = round((cat_commit_weights[key] / tot_w) * 100.0, 1)
         desc, col_key = meta[key]
         rows.append(
@@ -331,8 +326,6 @@ def generate_telemetry_svg(user_data, commit_hours, stack_stats, mode="dark"):
 
     today = datetime.date.today()
     today_iso = today.isoformat()
-    typo_fixed_date = datetime.date(2026, 10, 15)
-    typo_free_days = max(1, (today - typo_fixed_date).days)
 
     # =========================================================================
     # PANE 1: 2D Square Contribution Matrix (x=12..472, y=38..166, 460x128)
@@ -533,7 +526,7 @@ def generate_telemetry_svg(user_data, commit_hours, stack_stats, mode="dark"):
   <text x="26" y="41" fill="{p["text_main"]}" font-size="9.5" class="mono"><tspan fill="{p["text_muted"]}">┤</tspan><tspan fill="{p["accent"]}" font-weight="bold">¹</tspan> commits (52w)<tspan fill="{p["text_muted"]}">├</tspan></text>
 
   <text x="24" y="56" fill="{p["text_muted"]}" font-size="8.5" class="mono"><tspan fill="{p["text_main"]}" font-weight="bold">{total_contribs}</tspan> total │ <tspan fill="{p["cyan"]}" font-weight="bold">{active_days}d</tspan> active │ max <tspan fill="{p["accent"]}" font-weight="bold">{max_day}/d</tspan></text>
-  <text x="458" y="56" text-anchor="end" fill="{p["text_muted"]}" font-size="8.2" class="mono"><tspan fill="{p["accent"]}">{priv_pct}% @gruposcc</tspan> / <tspan fill="{p["cyan"]}">{pub_pct}% pub</tspan></text>
+  <text x="458" y="56" text-anchor="end" fill="{p["text_muted"]}" font-size="8.2" class="mono"><tspan fill="{p["accent"]}">{priv_pct}% private</tspan> / <tspan fill="{p["cyan"]}">{pub_pct}% public</tspan></text>
 
   <!-- Weekday Labels (aligned with rows 1, 3, 5) -->
   <text x="24" y="88.0" fill="{p["text_dim"]}" font-size="7.2" class="mono">mon</text>
@@ -606,7 +599,7 @@ def generate_telemetry_svg(user_data, commit_hours, stack_stats, mode="dark"):
   <rect x="492" y="170" width="154" height="11" fill="{p["panel_bg"]}"/>
   <text x="496" y="179" fill="{p["text_main"]}" font-size="9.5" class="mono"><tspan fill="{p["text_muted"]}">┤</tspan><tspan fill="{p["accent"]}" font-weight="bold">⁴</tspan> stack (by commits)<tspan fill="{p["text_muted"]}">├</tspan></text>
   <text x="854" y="196" text-anchor="end" fill="{p["text_muted"]}" font-size="8.2" class="mono"><tspan fill="{p["text_main"]}" font-weight="bold">{stack_stats["total_repos"]}</tspan> repos ({stack_stats["priv_repos"]} priv · {stack_stats["pub_repos"]} pub)</text>
-  <text x="496" y="196" fill="{p["text_muted"]}" font-size="8.2" class="mono">weighted by commits across <tspan fill="{p["accent"]}" font-weight="bold">{stack_stats["active_repos"]}</tspan> active repos</text>
+  <text x="496" y="196" fill="{p["text_muted"]}" font-size="8.2" class="mono">commit-weighted · <tspan fill="{p["accent"]}" font-weight="bold">{stack_stats["active_repos"]}</tspan> active repos</text>
 
   <!-- Proportional Stack Bar -->
   {"".join(stack_segments_svg)}
@@ -620,199 +613,13 @@ def generate_telemetry_svg(user_data, commit_hours, stack_stats, mode="dark"):
   <rect x="12" y="312" width="856" height="20" rx="2.5" fill="{p["tmux_bg"]}" stroke="{p["panel_border"]}" stroke-width="0.8"/>
   <rect x="12" y="312" width="68" height="20" rx="2.5" fill="{p["accent"]}"/>
   <circle cx="22" cy="322" r="2.6" fill="{p["tmux_pill_fg"]}" class="led-ok"/>
-  <text x="49" y="325" text-anchor="middle" fill="{p["tmux_pill_fg"]}" font-size="8.5" font-weight="bold" class="mono">0:noc</text>
+  <text x="49" y="325" text-anchor="middle" fill="{p["tmux_pill_fg"]}" font-size="8.5" font-weight="bold" class="mono">0:sys</text>
 
-  <text x="92" y="325" fill="{p["text_muted"]}" font-size="8.4" class="mono">prefer: <tspan fill="{p["text_main"]}">sh + python</tspan> │ <tspan fill="{p["text_main"]}">html + css + js (as God intended)</tspan> │ <tspan fill="{p["text_main"]}">raw sql</tspan></text>
-  <text x="858" y="325" text-anchor="end" fill="{p["text_muted"]}" font-size="8.2" class="mono">typo-free: <tspan fill="{p["warn"]}" font-weight="bold">{typo_free_days}d</tspan></text>
+  <text x="92" y="325" fill="{p["text_muted"]}" font-size="8.4" class="mono">focus: <tspan fill="{p["text_main"]}">systems &amp; telemetry</tspan> │ <tspan fill="{p["text_main"]}">hypermedia web</tspan> │ <tspan fill="{p["text_main"]}">quantitative modeling</tspan></text>
+  <text x="858" y="325" text-anchor="end" fill="{p["text_muted"]}" font-size="8.2" class="mono">window: <tspan fill="{p["text_main"]}">52w</tspan> │ repos: <tspan fill="{p["accent"]}" font-weight="bold">{stack_stats["total_repos"]}</tspan> │ <tspan fill="{p["text_main"]}">utc-3</tspan></text>
 </svg>
 """
     return svg
-
-
-def generate_pipeline_svg(mode="dark"):
-    """
-    Generates a NOC/terminal-styled architecture & workflow pipeline SVG
-    with a window title bar, port-to-port bus connectors, command headers,
-    and structured rows.
-    """
-    p = _palette(mode)
-    row_bg = "#141b26" if mode == "dark" else "#f8fafc"
-
-    stages = [
-        {
-            "num": "¹",
-            "title": "signal &amp; hardware",
-            "cmd": "$ listen --raw",
-            "badge": "in",
-            "col": p["cyan"],
-            "lines": [
-                ("rf / sensors", "telemetry"),
-                ("legacy gear", "raw http/tcp"),
-                ("edge &amp; apis", "streams"),
-            ],
-        },
-        {
-            "num": "²",
-            "title": "glue &amp; collectors",
-            "cmd": "$ pipe | parse",
-            "badge": "sh/py",
-            "col": p["accent"],
-            "lines": [
-                ("sh / bash", "coreutils"),
-                ("python3", "stdlib-first"),
-                ("cron + awk", "zero bloat"),
-            ],
-        },
-        {
-            "num": "³",
-            "title": "state &amp; compute",
-            "cmd": "$ query --fast",
-            "badge": "core",
-            "col": p["accent"],
-            "lines": [
-                ("raw sql", "no heavy orm"),
-                ("unix daemons", "low ram"),
-                ("models", "stochastic"),
-            ],
-        },
-        {
-            "num": "⁴",
-            "title": "output &amp; web ui",
-            "cmd": "$ serve --plain",
-            "badge": "out",
-            "col": p["warn"],
-            "lines": [
-                ("html+css+js", "vanilla web"),
-                ("↳ as God", "intended"),
-                ("zabbix / tui", "alerts &amp; hud"),
-            ],
-        },
-    ]
-
-    cards_svg = []
-    connectors_svg = []
-    x0 = 12.0
-    card_w = 196.0
-    gap = 24.0
-    card_y = 38.0
-    card_h = 98.0
-
-    for idx, st in enumerate(stages):
-        cx = x0 + idx * (card_w + gap)
-        title_box_w = len(st["title"].replace("&amp;", "&")) * 5.8 + 26
-
-        cards_svg.append(
-            f'  <rect x="{cx:.1f}" y="{card_y:.1f}" width="{card_w:.1f}" height="{card_h:.1f}" rx="3" fill="{p["panel_bg"]}" stroke="{p["panel_border"]}" stroke-width="1"/>'
-            f'  <rect x="{cx + 8:.1f}" y="{card_y - 6:.1f}" width="{title_box_w:.1f}" height="11" fill="{p["panel_bg"]}"/>'
-            f'  <text x="{cx + 11:.1f}" y="{card_y + 3:.1f}" fill="{p["text_main"]}" font-size="9" class="mono">'
-            f'<tspan fill="{p["text_muted"]}">┤</tspan><tspan fill="{st["col"]}" font-weight="bold">{st["num"]}</tspan> {st["title"]}<tspan fill="{p["text_muted"]}">├</tspan></text>'
-            f'  <text x="{cx + 10:.1f}" y="{card_y + 18:.1f}" fill="{p["text_muted"]}" font-size="7.8" class="mono">{st["cmd"]}</text>'
-            f'  <rect x="{cx + card_w - 38:.1f}" y="{card_y + 9.5:.1f}" width="30" height="11" rx="2" fill="{row_bg}" stroke="{p["grid_line"]}" stroke-width="0.7"/>'
-            f'  <text x="{cx + card_w - 23:.1f}" y="{card_y + 17.5:.1f}" text-anchor="middle" fill="{st["col"]}" font-size="7.2" font-weight="bold" class="mono">{st["badge"]}</text>'
-            f'  <line x1="{cx + 8:.1f}" y1="{card_y + 24:.1f}" x2="{cx + card_w - 8:.1f}" y2="{card_y + 24:.1f}" stroke="{p["grid_line"]}" stroke-width="1"/>'
-        )
-
-        for l_idx, (left_txt, right_txt) in enumerate(st["lines"]):
-            ry = card_y + 30.0 + l_idx * 21.0
-            if l_idx % 2 == 0:
-                cards_svg.append(
-                    f'  <rect x="{cx + 6:.1f}" y="{ry:.1f}" width="{card_w - 12:.1f}" height="17" rx="1.5" fill="{row_bg}"/>'
-                )
-            ty = ry + 11.5
-            if left_txt.startswith("↳"):
-                cards_svg.append(
-                    f'  <text x="{cx + 14:.1f}" y="{ty:.1f}" fill="{p["warn"]}" font-size="8.0" font-style="italic" class="mono">{left_txt} {right_txt}</text>'
-                )
-            else:
-                cards_svg.append(
-                    f'  <circle cx="{cx + 13:.1f}" cy="{ty - 2.8:.1f}" r="2.0" fill="{st["col"]}"/>'
-                    f'  <text x="{cx + 20:.1f}" y="{ty:.1f}" fill="{p["text_main"]}" font-size="8.2" font-weight="bold" class="mono">{left_txt}</text>'
-                    f'  <text x="{cx + card_w - 10:.1f}" y="{ty:.1f}" text-anchor="end" fill="{p["text_muted"]}" font-size="7.6" class="mono">{right_txt}</text>'
-                )
-
-        if idx < len(stages) - 1:
-            ax0 = cx + card_w
-            ax1 = cx + card_w + gap
-            ay = card_y + card_h / 2.0
-            connectors_svg.append(
-                f'  <line x1="{ax0:.1f}" y1="{ay:.1f}" x2="{ax1:.1f}" y2="{ay:.1f}" stroke="{p["grid_line"]}" stroke-width="2.2"/>'
-                f'  <line x1="{ax0 + 3:.1f}" y1="{ay:.1f}" x2="{ax1 - 5:.1f}" y2="{ay:.1f}" stroke="{p["accent"]}" stroke-width="1.5" stroke-dasharray="3,3" class="flow-line"/>'
-                f'  <circle cx="{ax0:.1f}" cy="{ay:.1f}" r="2.6" fill="{p["panel_bg"]}" stroke="{st["col"]}" stroke-width="1.2"/>'
-                f'  <polygon points="{ax1 - 1.5:.1f},{ay:.1f} {ax1 - 6.5:.1f},{ay - 3.2:.1f} {ax1 - 6.5:.1f},{ay + 3.2:.1f}" fill="{p["accent"]}"/>'
-            )
-
-    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 172" width="100%" height="100%">
-  <defs>
-    <style>
-      .mono {{ font-family: 'JetBrains Mono', 'Fira Code', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace; }}
-      .flow-line {{ animation: flowDash 1.2s infinite linear; }}
-      @keyframes flowDash {{
-        to {{ stroke-dashoffset: -12; }}
-      }}
-    </style>
-  </defs>
-
-  <!-- Outer Terminal Window -->
-  <rect x="2" y="2" width="876" height="168" rx="6" fill="{p["bg"]}" stroke="{p["panel_border"]}" stroke-width="1.2"/>
-
-  <!-- Terminal Header Bar -->
-  <path d="M 2 8 Q 2 2 8 2 L 872 2 Q 878 2 878 8 L 878 26 L 2 26 Z" fill="{p["term_bar"]}"/>
-  <line x1="2" y1="26" x2="878" y2="26" stroke="{p["panel_border"]}" stroke-width="1"/>
-  <circle cx="16" cy="14" r="3.0" fill="{p["text_dim"]}" opacity="0.6"/>
-  <circle cx="26" cy="14" r="3.0" fill="{p["text_dim"]}" opacity="0.6"/>
-  <circle cx="36" cy="14" r="3.0" fill="{p["text_dim"]}" opacity="0.6"/>
-  <text x="440" y="17.5" text-anchor="middle" fill="{p["text_muted"]}" font-size="9.2" class="mono">berndof :: architecture &amp; workflow pipeline</text>
-  <text x="866" y="17.5" text-anchor="end" fill="{p["text_muted"]}" font-size="8.2" class="mono">policy: keep-it-lightweight</text>
-
-  <!-- Pipeline Stage Cards & Animated Bus Connectors -->
-{chr(10).join(cards_svg)}
-{chr(10).join(connectors_svg)}
-
-  <!-- Bottom Principle Bar -->
-  <rect x="12" y="143" width="856" height="19" rx="2.5" fill="{p["tmux_bg"]}" stroke="{p["panel_border"]}" stroke-width="0.8"/>
-  <rect x="12" y="143" width="58" height="19" rx="2.5" fill="{p["cyan"]}"/>
-  <text x="41" y="155.5" text-anchor="middle" fill="{p["tmux_pill_fg"]}" font-size="8.2" font-weight="bold" class="mono">unix</text>
-  <text x="80" y="155.5" fill="{p["text_muted"]}" font-size="8.2" class="mono">if a shell script + python + plain <tspan fill="{p["text_main"]}">html/css/js</tspan> solves it, skip the 200MB framework · <tspan fill="{p["accent"]}">runs on a toaster</tspan></text>
-  <text x="858" y="155.5" text-anchor="end" fill="{p["text_dim"]}" font-size="8" class="mono">0B bloat</text>
-</svg>
-"""
-    return svg
-
-
-def patch_snake_svgs(out_dir):
-    """
-    Patches Platane/snk generated SVG files so dark mode has crisp cell borders,
-    visible emerald levels even when max_day is high, and a cyan snake instead of
-    low-contrast dark purple.
-    """
-    dark_path = os.path.join(out_dir, "github-contribution-grid-snake-dark.svg")
-    light_path = os.path.join(out_dir, "github-contribution-grid-snake.svg")
-
-    if os.path.isfile(dark_path):
-        with open(dark_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        content = re.sub(
-            r":root\{[^}]+\}",
-            ":root{--cb:#26324488;--cs:#38bdf8;--ce:#121822;--c0:#121822;--c1:#047857;--c2:#10b981;--c3:#34d399;--c4:#6ee7b7}",
-            content,
-            count=1,
-        )
-        with open(dark_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        print(f"Patched dark snake palette in {dark_path}")
-
-    if os.path.isfile(light_path):
-        with open(light_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        content = re.sub(
-            r":root\{[^}]+\}",
-            ":root{--cb:#cbd5e177;--cs:#0284c7;--ce:#e2e8f0;--c0:#e2e8f0;--c1:#6ee7b7;--c2:#34d399;--c3:#10b981;--c4:#047857}",
-            content,
-            count=1,
-        )
-        with open(light_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        print(f"Patched light snake palette in {light_path}")
 
 
 def _mock_user_data():
@@ -841,18 +648,12 @@ def main():
     out_dir = os.environ.get("OUT_DIR", "dist")
     os.makedirs(out_dir, exist_ok=True)
 
-    if "--patch-snake-only" in sys.argv:
-        patch_snake_svgs(out_dir)
-        return
-
     user_data = fetch_data() or _mock_user_data()
     commit_hours, stack_stats = analyze_repos_and_commits(user_data)
 
     outputs = {
         "noc-telemetry-dark.svg": generate_telemetry_svg(user_data, commit_hours, stack_stats, mode="dark"),
         "noc-telemetry-light.svg": generate_telemetry_svg(user_data, commit_hours, stack_stats, mode="light"),
-        "noc-pipeline-dark.svg": generate_pipeline_svg(mode="dark"),
-        "noc-pipeline-light.svg": generate_pipeline_svg(mode="light"),
     }
 
     for fname, svg_content in outputs.items():
@@ -860,7 +661,6 @@ def main():
         with open(os.path.join(out_dir, fname), "w", encoding="utf-8") as f:
             f.write(svg_content)
 
-    patch_snake_svgs(out_dir)
     print(f"Generated {', '.join(outputs.keys())} in {out_dir}/ successfully.")
 
 
